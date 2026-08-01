@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.wrangler/
+dist/
+coverage/
+diagnostics/
+sender-profile/
+worker/worker-configuration.d.ts
+*.log
+*.pem
+*.key
+*.crt
+.DS_Store
+Thumbs.db
+

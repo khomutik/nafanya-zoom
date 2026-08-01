@@ -1,0 +1,15 @@
+your-domain.example {
+  encode zstd gzip
+
+  # Временное окно ручной авторизации Zoom. Маршрут работает только пока
+  # auth-контейнер слушает локальный порт 6080.
+  handle_path /nafanya-zoom-control/vnc/* {
+    reverse_proxy 127.0.0.1:6080
+  }
+
+  # Пульт, Zoom App Home URL и прокси к Worker.
+  handle_path /nafanya-zoom-control/* {
+    reverse_proxy 127.0.0.1:3098
+  }
+}
+

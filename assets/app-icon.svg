@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Nafanya Zoom Bridge placeholder icon</title>
+  <desc id="desc">Neutral bridge and chat icon; replace with your group's artwork.</desc>
+  <rect width="512" height="512" rx="112" fill="#111a40"/>
+  <path d="M92 310h328v74H92z" fill="#f6e5b3"/>
+  <path d="M132 310c14-119 234-119 248 0h-52c-13-63-131-63-144 0z" fill="#d47b2f"/>
+  <path d="M116 236h280" fill="none" stroke="#f6e5b3" stroke-width="30" stroke-linecap="round"/>
+  <path d="M166 170h180a42 42 0 0 1 42 42v42H124v-42a42 42 0 0 1 42-42z" fill="#fff"/>
+  <circle cx="203" cy="212" r="17" fill="#111a40"/>
+  <circle cx="256" cy="212" r="17" fill="#111a40"/>
+  <circle cx="309" cy="212" r="17" fill="#111a40"/>
+</svg>
+

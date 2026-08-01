@@ -1,0 +1,64 @@
+{
+  "appName": "Nafanya Zoom Bridge",
+  "botDisplayName": "Nafanya (bot)",
+  "timeZone": "Europe/Moscow",
+  "messageLimit": 950,
+  "meetingDays": [
+    {
+      "key": "monday",
+      "label": "Понедельник",
+      "topicText": "ПОНЕДЕЛЬНИК\nТЕМЫ СОБРАНИЯ\n________________\n\nЗамените этот текст темами вашей группы.",
+      "collections": ["big_book"]
+    },
+    {
+      "key": "tuesday",
+      "label": "Вторник",
+      "topicText": "ВТОРНИК\nТЕМЫ СОБРАНИЯ\n________________\n\nЗамените этот текст темами вашей группы.",
+      "collections": ["daily_reflections", "as_bill_sees_it", "game_questions"]
+    },
+    {
+      "key": "thursday",
+      "label": "Четверг",
+      "topicText": "ЧЕТВЕРГ\nТЕМЫ СОБРАНИЯ\n________________\n\nЗамените этот текст темами вашей группы.",
+      "collections": ["living_sober"]
+    },
+    {
+      "key": "friday",
+      "label": "Пятница",
+      "topicText": "ПЯТНИЦА\nТЕМЫ СОБРАНИЯ\n________________\n\nЗамените этот текст темами вашей группы.",
+      "collections": ["twelve_twelve"]
+    },
+    {
+      "key": "sunday",
+      "label": "Воскресенье",
+      "topicText": "ВОСКРЕСЕНЬЕ\nТЕМЫ СОБРАНИЯ\n________________\n\nЗамените этот текст темами вашей группы.",
+      "collections": ["game_questions"]
+    }
+  ],
+  "meetingButtons": [
+    {
+      "key": "welcome",
+      "label": "Приветствие",
+      "contexts": ["meeting", "speaker"],
+      "text": "Добро пожаловать на собрание. Замените этот текст сообщением вашей группы."
+    },
+    {
+      "key": "format",
+      "label": "Формат собрания",
+      "contexts": ["meeting", "speaker"],
+      "text": "Замените этот текст правилами и форматом вашего собрания."
+    },
+    {
+      "key": "links",
+      "label": "Наши ссылки",
+      "contexts": ["meeting", "speaker"],
+      "text": "Сайт: https://example.org/\nДобавьте здесь нужные вашей группе ссылки."
+    }
+  ],
+  "speaker": {
+    "label": "Спикерская",
+    "buttonLabel": "Вопросы спикеру",
+    "intro": "ВОПРОСЫ СПИКЕРУ\n\n👉 Чтобы задать вопрос голосом, напишите в чате «111».\n✍️ Либо напишите вопрос в чате, и его задаст ведущий."
+  },
+  "testMessage": "Тестовое сообщение Zoom: связь работает."
+}

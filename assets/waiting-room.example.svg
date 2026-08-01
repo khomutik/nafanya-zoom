@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
+  <title id="title">Waiting room example</title>
+  <desc id="desc">Neutral editable waiting room layout.</desc>
+  <rect width="1200" height="600" fill="#fbf3dc"/>
+  <circle cx="600" cy="110" r="66" fill="#111a40"/>
+  <path d="M557 122h86M576 96h48" stroke="#f6e5b3" stroke-width="12" stroke-linecap="round"/>
+  <text x="600" y="235" text-anchor="middle" font-family="Arial, sans-serif" font-size="54" font-weight="700" fill="#111a40">НАЗВАНИЕ ВАШЕЙ ГРУППЫ</text>
+  <text x="600" y="320" text-anchor="middle" font-family="Arial, sans-serif" font-size="40" font-weight="700" fill="#d06828">ВРЕМЯ СОБРАНИЙ</text>
+  <text x="600" y="382" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" fill="#34384c">дни недели и часовой пояс</text>
+  <line x1="180" y1="435" x2="1020" y2="435" stroke="#c5ab75" stroke-width="3"/>
+  <text x="600" y="490" text-anchor="middle" font-family="Arial, sans-serif" font-size="25" fill="#34384c">https://example.org/</text>
+</svg>
+

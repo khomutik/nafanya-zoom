@@ -1,0 +1,21 @@
+{
+  "name": "@nafanya-zoom/worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:panel": "node test/check-panel-syntax.mjs",
+    "types": "wrangler types",
+    "check": "npm run types && npm run test:panel && npm test && wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.20.1",
+    "@cloudflare/workers-types": "^5.20260801.1",
+    "@types/node": "^22.20.1",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}
