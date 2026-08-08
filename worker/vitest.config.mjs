@@ -8,7 +8,10 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ZOOM_PANEL_TOKEN: "panel-test-secret",
-          ZOOM_ONLY_SECRET: "sender-test-secret"
+          ZOOM_ONLY_SECRET: "sender-test-secret",
+          ZOOM_TEAM_CHAT_TEST_ENABLED: "true",
+          ZOOM_TEAM_CHAT_TEST_MEETING_IDS: "TEST-999",
+          ZOOM_TEAM_CHAT_TOKEN_ENCRYPTION_KEY: "test-only-encryption-key"
         }
       }
     })

@@ -5,7 +5,11 @@
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "APP_INSTANCE_ID": "default"
+    "APP_INSTANCE_ID": "default",
+    "ZOOM_TEAM_CHAT_TEST_ENABLED": "false",
+    "ZOOM_TEAM_CHAT_TEST_MEETING_IDS": "",
+    "ZOOM_TEAM_CHAT_CLIENT_ID": "",
+    "ZOOM_TEAM_CHAT_REDIRECT_URI": ""
   },
   "r2_buckets": [
     {
@@ -22,6 +26,10 @@
       {
         "name": "ZOOM_SHARED_TIMER_STATE",
         "class_name": "ZoomSharedTimerState"
+      },
+      {
+        "name": "ZOOM_TEAM_CHAT_STATE",
+        "class_name": "ZoomTeamChatState"
       }
     ]
   },
@@ -29,6 +37,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ZoomMeetingState", "ZoomSharedTimerState"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ZoomTeamChatState"]
     }
   ],
   "observability": {

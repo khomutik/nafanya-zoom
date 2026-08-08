@@ -17,7 +17,7 @@ services:
       ZOOM_CONTROL_PROFILE_DIR: /sender-profile
       ZOOM_CONTROL_DIAGNOSTICS_DIR: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}/diagnostics
       ZOOM_CONTROL_HEALTH_URL: http://127.0.0.1:3097/health
-      # ZOOM_APP_CLIENT_SECRET and ZOOM_APP_SESSION_SECRET are read from .env.
+      # Zoom App and optional Team Chat test credentials are read from .env.
     volumes:
       # Keep this path identical inside and outside the container. Docker Compose
       # passes bind-mount paths to the host daemon when it starts zoom-sender.

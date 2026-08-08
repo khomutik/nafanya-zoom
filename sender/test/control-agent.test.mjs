@@ -216,20 +216,15 @@ test("control page has a configurable shared host timer and collapsible tech pan
   assert.match(html, /zoomProduct==="desktop"&&timerExecutor/u);
   assert.match(html, /configured\.product/u);
   assert.doesNotMatch(html, /timerPreview|Проверить 7 гудков/u);
-  assert.match(html, /withSound:false/u);
+  assert.match(html, /withSound:true/u);
   assert.match(html, /function indicatorMilliseconds\(\)\{return Math\.max\(0,Math\.ceil\(remainingNow\(\)\)\)\}/u);
   assert.match(html, /start:indicatorMilliseconds\(\)/u);
   assert.doesNotMatch(html, /indicatorMilliseconds\(\)[\s\S]{0,80}\/1000/u);
   assert.doesNotMatch(html, /songChoice|timerSound/u);
-  assert.match(html, /for\(let index=0;index<7;index\+\+\)/u);
-  assert.match(html, /shareComputerAudio\(\{action:"start",mode:"mono"\}\)/u);
-  assert.match(html, /shareComputerAudio\(\{action:"stop"\}\)/u);
-  assert.match(html, /capabilities:\[[^\]]*"shareComputerAudio"/u);
-  assert.match(html, /onParticipantChange/u);
-  assert.match(html, /meeting_board_replay/u);
+  assert.doesNotMatch(html, /shareComputerAudio|onParticipantChange|meeting_board_replay/u);
   assert.match(html, /timerCommand\("extend",\{deltaMs:minutes\*60000\}\)/u);
   assert.doesNotMatch(html, /extendDuration:minutes\*60000/u);
-  assert.match(html, /new\(window\.AudioContext\|\|window\.webkitAudioContext\)\(\)/u);
+  assert.doesNotMatch(html, /AudioContext|claim_finish|playSevenBeeps/u);
   assert.doesNotMatch(html, /timer-note|id="timerNote"|Цифры видят|семь гудков слышат/u);
   assert.match(html, /document\.activeElement!==minutesInput/u);
 });
@@ -240,6 +235,8 @@ test("Zoom App page initializes the SDK and hides server administration", () => 
   assert.match(html, /zoomSdk\.config/u);
   assert.match(html, /appPopout/u);
   assert.match(html, /setDynamicIndicator/u);
+  assert.match(html, /withSound:true/u);
+  assert.match(html, /getSupportedJsApis/u);
   assert.match(html, /removeDynamicIndicator/u);
   assert.match(html, /extendDynamicIndicator/u);
   assert.doesNotMatch(html, /setVirtualForeground|removeVirtualForeground|timerOnTile/u);
@@ -253,6 +250,13 @@ test("Zoom App page initializes the SDK and hides server administration", () => 
   assert.match(html, /response\.status!==401/u);
   assert.match(html, /location\.replace\(url\.toString\(\)\)/u);
   assert.match(html, /async function authorizedFetch\(resource,options\)/u);
+});
+
+test("Team Chat SDK capability is enabled only for the isolated test app", () => {
+  assert.doesNotMatch(buildControlHtml({ zoomApp: true }), /teamChatTestMode=true/u);
+  const html = buildControlHtml({ zoomApp: true, teamChatTest: true });
+  assert.match(html, /teamChatTestMode=true/u);
+  assert.match(html, /sendMessageToChat/u);
 });
 
 test("Zoom App context issues a meeting-length session after validation", () => {
@@ -310,6 +314,9 @@ test("control HTTP entrypoint uses protected cookie and fixed routes", async () 
   assert.match(source, /\/api\/auth-setup\/stop/u);
   assert.ok(source.includes(`.replaceAll('\"/zoom-only/app/action\"', '\"./zoom-only/app/action\"')`));
   assert.ok(source.includes(`.replaceAll('\"/zoom-only/library/status\"', '\"./zoom-only/library/status\"')`));
+  assert.match(source, /x-nafanya-zoom-meeting-id/u);
+  assert.match(source, /ZOOM_TEAM_CHAT_TEST_APP_CLIENT_SECRET/u);
+  assert.match(source, /\/zoom-only\/team-chat\/sdk-message/u);
   assert.match(source, /"\/zoom-only\/library\/import"/u);
   assert.match(source, /new URLSearchParams\(search\)/u);
   assert.match(source, /url\.pathname, url\.search/u);
