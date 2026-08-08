@@ -120,7 +120,17 @@ export class ZoomMeetingState extends DurableObject {
       if (rememberRequest(board, payload.requestId)) return { ok: true, duplicate: true, state: board, activeMode: runtime.activeMode, queued: [] };
       const now = Date.now();
       const id = String(payload.id || "").trim();
-      if (action === "clear_current") {
+      if (action === "clear_all") {
+        let speaker = normalizeSpeakerQuestionsState(runtime.speakerQuestions);
+        if (speaker.sessionDate !== sessionDate) speaker = { ...createEmptySpeakerQuestionsState(), sessionDate };
+        speaker.entries = [];
+        speaker.version += 1;
+        speaker.updatedAt = now;
+        speaker.lastMessages = splitZoomMessages(buildSpeakerQuestionsText(speaker));
+        runtime.speakerQuestions = speaker;
+        board.entries = [];
+        board.additionalTopics = [];
+      } else if (action === "clear_current") {
         board.entries = [];
         board.additionalTopics = [];
       } else if (action === "add_entry") {
@@ -149,7 +159,7 @@ export class ZoomMeetingState extends DurableObject {
       runtime.activeMode = "meeting";
       const deliveryMessages = board.lastMessages;
       const queued = payload.deliveryMode === "team_chat_test" ? [] : appendMessages(runtime, deliveryMessages);
-      return { ok: true, duplicate: false, state: board, activeMode: runtime.activeMode, queued, deliveryMessages };
+      return { ok: true, duplicate: false, state: board, speakerQuestions: runtime.speakerQuestions, activeMode: runtime.activeMode, queued, deliveryMessages };
     });
   }
 

@@ -82,18 +82,19 @@ describe("Zoom-only Worker", () => {
     expect(productionStatus.meetingBoard.entries.some((item) => item.text === "Test-only entry")).toBe(false);
   });
 
-  it("clears the ordinary queue and topics without touching speaker questions", async () => {
+  it("clears the ordinary queue, topics and speaker questions atomically", async () => {
     await action({ action: "meeting_board_add_entry", dayKey: "thursday", text: "Queue entry", requestId: crypto.randomUUID() });
     await action({ action: "meeting_board_add_topic", dayKey: "thursday", text: "Extra topic", requestId: crypto.randomUUID() });
     await action({ action: "speaker_questions_add", text: "Speaker question", requestId: crypto.randomUUID() });
     const requestId = crypto.randomUUID();
-    const cleared = await action({ action: "meeting_board_clear_current", dayKey: "thursday", requestId });
-    const duplicate = await action({ action: "meeting_board_clear_current", dayKey: "thursday", requestId });
+    const cleared = await action({ action: "meeting_board_clear_all", dayKey: "thursday", requestId });
+    const duplicate = await action({ action: "meeting_board_clear_all", dayKey: "thursday", requestId });
     expect(cleared.data.state.entries).toHaveLength(0);
     expect(cleared.data.state.additionalTopics).toHaveLength(0);
+    expect(cleared.data.speakerQuestions.entries).toHaveLength(0);
     expect(duplicate.data.duplicate).toBe(true);
     const status = await (await SELF.fetch("https://worker.test/zoom-only/status", { headers: panelHeaders })).json();
-    expect(status.speakerQuestions.entries.some((item) => item.text === "Speaker question")).toBe(true);
+    expect(status.speakerQuestions.entries).toHaveLength(0);
   });
 
   it("delivers and acknowledges outbox messages", async () => {

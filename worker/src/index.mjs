@@ -161,6 +161,7 @@ const BOARD_ACTIONS = Object.freeze({
   meeting_board_defer_entry: "defer_entry",
   meeting_board_remove_entry: "remove_entry",
   meeting_board_remove_topic: "remove_topic",
+  meeting_board_clear_all: "clear_all",
   meeting_board_clear_current: "clear_current"
 });
 
