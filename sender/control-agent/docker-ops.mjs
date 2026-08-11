@@ -56,6 +56,11 @@ export class DockerOps {
     return ["compose", "-p", "nafanya-zoom-sender", "-f", "compose.example.yml", ...command];
   }
 
+  async isOldBridgeRunning() {
+    const { stdout } = await this.docker(["inspect", "-f", "{{.State.Running}}", "nafanya-zoom-bridge"]).catch(() => ({ stdout: "false" }));
+    return String(stdout).trim() === "true";
+  }
+
   async isSenderRunning() {
     const { stdout } = await this.docker(["inspect", "-f", "{{.State.Running}}", "nafanya-zoom-sender-v2"]).catch(() => ({ stdout: "false" }));
     return String(stdout).trim() === "true";
@@ -83,12 +88,21 @@ export class DockerOps {
   }
 
   async stopSender() {
-    await this.docker(this.composeArgs(["down"]));
+    await this.docker(this.composeArgs(["stop", "zoom-sender"]));
   }
 
   async getSenderHealth() {
     const response = await this.fetch(this.config.healthUrl, { signal: AbortSignal.timeout(4000) });
     return response.json();
+  }
+
+  async getQueueStatus() {
+    const response = await this.fetch(`${this.config.workerBaseUrl}/zoom-only/status`, {
+      headers: { "x-nafanya-zoom-secret": this.config.zoomOnlySecret, "user-agent": "Nafanya-Zoom-Control/1.0" },
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await response.json();
+    return { queueOpen: Boolean(data?.queue?.isOpen), outboxSize: Number(data?.outboxSize || 0) };
   }
 
   async detectAuthRequired() {

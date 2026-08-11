@@ -21,8 +21,7 @@ function emptyRuntimeState() {
     lastPanelAction: null,
     meetingBoard: createEmptyMeetingBoardState(),
     speakerQuestions: createEmptySpeakerQuestionsState(),
-    activeMode: null,
-    lastReplayAt: 0
+    activeMode: null
   };
 }
 
@@ -37,7 +36,6 @@ function normalizeRuntimeState(value) {
     speakerQuestions: normalizeSpeakerQuestionsState(source.speakerQuestions),
     activeMode: source.activeMode === "meeting" || source.activeMode === "speaker" ? source.activeMode : null
   };
-  state.lastReplayAt = Math.max(0, Number(source.lastReplayAt) || 0);
   const maxId = state.outbox.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
   if (state.nextOutboxId <= maxId) state.nextOutboxId = maxId + 1;
   return state;
@@ -113,16 +111,6 @@ export class ZoomMeetingState extends DurableObject {
   async meetingBoardAction(payload = {}) {
     return this.mutate((runtime) => {
       const action = String(payload.boardAction || "publish");
-      if (action === "replay") {
-        const board = normalizeMeetingBoardState(runtime.meetingBoard);
-        const now = Date.now();
-        const currentSession = validSessionDate(payload.sessionDate) && board.sessionDate === payload.sessionDate;
-        const replayable = runtime.activeMode === "meeting" && currentSession && board.lastMessages.length > 0;
-        const duplicate = replayable && now - runtime.lastReplayAt < 15_000;
-        const queued = replayable && !duplicate ? appendMessages(runtime, board.lastMessages) : [];
-        if (queued.length) runtime.lastReplayAt = now;
-        return { ok: true, duplicate, state: board, activeMode: runtime.activeMode, queued };
-      }
       const sessionDate = String(payload.sessionDate || "").trim();
       const dayKey = String(payload.dayKey || "").trim();
       if (!validSessionDate(sessionDate) || !getMeetingDay(dayKey)) throw new Error("\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0434\u0435\u043d\u044c \u0441\u043e\u0431\u0440\u0430\u043d\u0438\u044f.");
@@ -132,7 +120,20 @@ export class ZoomMeetingState extends DurableObject {
       if (rememberRequest(board, payload.requestId)) return { ok: true, duplicate: true, state: board, activeMode: runtime.activeMode, queued: [] };
       const now = Date.now();
       const id = String(payload.id || "").trim();
-      if (action === "add_entry") {
+      if (action === "clear_all") {
+        let speaker = normalizeSpeakerQuestionsState(runtime.speakerQuestions);
+        if (speaker.sessionDate !== sessionDate) speaker = { ...createEmptySpeakerQuestionsState(), sessionDate };
+        speaker.entries = [];
+        speaker.version += 1;
+        speaker.updatedAt = now;
+        speaker.lastMessages = splitZoomMessages(buildSpeakerQuestionsText(speaker));
+        runtime.speakerQuestions = speaker;
+        board.entries = [];
+        board.additionalTopics = [];
+      } else if (action === "clear_current") {
+        board.entries = [];
+        board.additionalTopics = [];
+      } else if (action === "add_entry") {
         board.entries.push({ id: crypto.randomUUID(), text: sanitizeBoardText(payload.text), status: "waiting", createdAt: now, updatedAt: now });
       } else if (action === "add_topic") {
         const text = sanitizeBoardText(payload.text, { stripLeadingNumber: true });
@@ -156,9 +157,9 @@ export class ZoomMeetingState extends DurableObject {
       board.updatedAt = now;
       board.lastMessages = splitZoomMessages(buildMeetingBoardText(board));
       runtime.activeMode = "meeting";
-      runtime.lastReplayAt = 0;
-      const queued = appendMessages(runtime, board.lastMessages);
-      return { ok: true, duplicate: false, state: board, activeMode: runtime.activeMode, queued };
+      const deliveryMessages = board.lastMessages;
+      const queued = appendMessages(runtime, deliveryMessages);
+      return { ok: true, duplicate: false, state: board, speakerQuestions: runtime.speakerQuestions, activeMode: runtime.activeMode, queued, deliveryMessages };
     });
   }
 

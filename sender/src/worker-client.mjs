@@ -15,7 +15,10 @@ export class WorkerOutboxClient {
         "content-type": "application/json",
         "x-nafanya-zoom-secret": this.config.zoomBridgeSecret
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        ...payload,
+        ...(this.config.outboxMeetingId ? { meetingId: this.config.outboxMeetingId } : {})
+      })
     }, "outbox");
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {

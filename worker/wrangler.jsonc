@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "nafanya-zoom-worker",
   "main": "src/index.mjs",
-  "compatibility_date": "2026-08-01",
+  "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "APP_INSTANCE_ID": "default"

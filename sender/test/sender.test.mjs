@@ -6,7 +6,7 @@ import { startHealthServer } from "../src/health-server.mjs";
 import { HealthState } from "../src/health-state.mjs";
 import { ZoomSenderService } from "../src/sender.mjs";
 import { WorkerOutboxClient, classifyWorkerFetchError, classifyWorkerHttpStatus } from "../src/worker-client.mjs";
-import { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, sanitizeDiagnosticText, sanitizePageUrl } from "../src/adapters/playwright-zoom-sender.mjs";
+import { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, exactOwnChatRecords, isOwnIdentityChatRecord, sanitizeDiagnosticText, sanitizePageUrl, shouldAttemptChatRecovery } from "../src/adapters/playwright-zoom-sender.mjs";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -25,6 +25,13 @@ function makeConfig() {
     errorIntervalMs: 10000
   };
 }
+
+test("chat recovery runs after admission but is throttled while Zoom is still opening the panel", () => {
+  assert.equal(shouldAttemptChatRecovery({ chatOpen: false, zoomJoined: true, waitingRoom: false, lastAttemptAt: 0, now: 20000 }), true);
+  assert.equal(shouldAttemptChatRecovery({ chatOpen: false, zoomJoined: true, waitingRoom: false, lastAttemptAt: 15000, now: 20000 }), false);
+  assert.equal(shouldAttemptChatRecovery({ chatOpen: false, zoomJoined: false, waitingRoom: true, lastAttemptAt: 0, now: 20000 }), false);
+  assert.equal(shouldAttemptChatRecovery({ chatOpen: true, zoomJoined: true, waitingRoom: false, lastAttemptAt: 0, now: 20000 }), false);
+});
 
 test("outbox client pulls zoom-only messages and sends ackIds", async () => {
   const calls = [];
@@ -81,6 +88,7 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
     ZOOM_SENDER_HEALTH_PORT: "4001",
     ZOOM_SENDER_DIAGNOSTICS_DIR: "/tmp/zoom-diagnostics",
     ZOOM_SENDER_BROWSER_ARGS: "--one --two",
+    ZOOM_SENDER_OUTBOX_MEETING_ID: "81047381947",
     HEADLESS: "false"
   });
   assert.equal(config.workerBaseUrl, "https://worker.example");
@@ -95,6 +103,7 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
   assert.equal(config.diagnosticsDir, "/tmp/zoom-diagnostics");
   assert.deepEqual(config.browserArgs, ["--one", "--two"]);
   assert.equal(config.headless, false);
+  assert.equal(config.outboxMeetingId, "81047381947");
 
   const fallback = loadConfig({
     ZOOM_SENDER_MIN_POLL_MS: "bad",
@@ -105,6 +114,21 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
   assert.equal(fallback.maxIntervalMs, 1500);
   assert.equal(fallback.errorIntervalMs, 10000);
   assert.equal(fallback.chatReadonlyDiagnostics, false);
+  assert.equal(fallback.outboxMeetingId, "");
+});
+
+test("replacement safety matches only exact messages owned by Nafanya", () => {
+  const records = [
+    { recordKind: "zoom-message-identity", sourceMessageId: "9-{c1c14f7f-14ab-4154-b8de-6bddb7ab8f81}", displayName: "You", rawDom: '<div class="new-chat-message__text-box--self"></div>', text: "\u041e\u0427\u0415\u0420\u0415\u0414\u042c \u041e\u0422\u041a\u0420\u042b\u0422\u0410:\n\n1. \u0412\u0430\u0441\u044f" },
+    { recordKind: "zoom-message-identity", sourceMessageId: "7-{9f60eaa0-5d15-4b3b-a2da-00a57ca61ac4}", displayName: "\u0410\u043d\u043d\u0430", rawDom: '<div class="new-chat-message__text-box"></div>', text: "\u041e\u0427\u0415\u0420\u0415\u0414\u042c \u041e\u0422\u041a\u0420\u042b\u0422\u0410:\n\n1. \u0412\u0430\u0441\u044f" },
+    { recordKind: "zoom-message-group", sourceMessageId: "8-{f394eaff-300a-40c9-9140-2295d49d9fb9}", displayName: "You", rawDom: '<div class="new-chat-message__text-box--self"></div>', text: "\u041e\u0427\u0415\u0420\u0415\u0414\u042c \u041e\u0422\u041a\u0420\u042b\u0422\u0410:\n\n1. \u0412\u0430\u0441\u044f" },
+    { recordKind: "zoom-message-identity", sourceMessageId: "10-{f96b0fd8-e0a6-4ec7-b86b-4d67aeff9f3f}", ariaLabel: "\u0412\u044b \u041a\u043e\u043c\u0443 \u0412\u0441\u0435, \u0441\u0435\u0439\u0447\u0430\u0441", text: "\u041e\u0427\u0415\u0420\u0415\u0414\u042c \u041e\u0422\u041a\u0420\u042b\u0422\u0410:\n\n1. \u0412\u0430\u0441\u044f\n2. \u041c\u0430\u0448\u0430" }
+  ];
+  assert.equal(isOwnIdentityChatRecord(records[0]), true);
+  assert.equal(isOwnIdentityChatRecord(records[1]), false);
+  assert.equal(isOwnIdentityChatRecord(records[2]), false);
+  assert.equal(isOwnIdentityChatRecord(records[3]), true);
+  assert.deepEqual(exactOwnChatRecords(records, records[0].text), [records[0]]);
 });
 
 test("diagnostics sanitize Zoom URLs before saving", () => {
@@ -186,8 +210,9 @@ test("sender does not ack failed individual sends that return no ack", async () 
   assert.deepEqual(result.ackIds, [1]);
 });
 
-test("empty outbox increases backoff and does not hammer Worker every 1.5 seconds", async () => {
-  const backoff = new Backoff(makeConfig());
+test("interactive default keeps polling at 1.5 seconds even when outbox is empty", async () => {
+  const config = loadConfig({});
+  const backoff = new Backoff(config);
   const service = new ZoomSenderService({
     workerClient: { async pull() { return { messages: [] }; } },
     zoomAdapter: { async getPresence() { return { zoomPageOpen: true, zoomJoined: true, chatOpen: true }; } },
@@ -196,21 +221,20 @@ test("empty outbox increases backoff and does not hammer Worker every 1.5 second
     logger: { info() {}, warn() {} }
   });
 
-  assert.equal((await service.runOnce()).delayMs, 3000);
-  assert.equal((await service.runOnce()).delayMs, 6000);
-  assert.equal((await service.runOnce()).delayMs, 12000);
-  assert.equal((await service.runOnce()).delayMs, 24000);
-  assert.equal((await service.runOnce()).delayMs, 30000);
+  assert.equal((await service.runOnce()).delayMs, 1500);
+  assert.equal((await service.runOnce()).delayMs, 1500);
+  assert.equal((await service.runOnce()).delayMs, 1500);
+  assert.equal(backoff.onError(), 10000);
 });
 
-test("messages reset backoff to minimum, errors back off without becoming frantic", async () => {
+test("messages reset backoff to minimum and errors use the configured retry delay", async () => {
   const backoff = new Backoff(makeConfig());
   backoff.onMessages(0);
   backoff.onMessages(0);
   assert.equal(backoff.currentDelayMs, 6000);
   assert.equal(backoff.onMessages(1), 1500);
   assert.equal(backoff.onError(), 10000);
-  assert.equal(backoff.onError(), 20000);
+  assert.equal(backoff.onError(), 10000);
 });
 
 test("sender-only code uses only the outbox and has no retired Zoom chat ingest", async () => {
@@ -243,7 +267,10 @@ test("Zoom browser adapter handles the Zoom web landing gate and read-only diagn
   assert.match(source, /page\.on\("console"/u);
   assert.match(source, /page\.on\("requestfailed"/u);
   assert.match(source, /chat-readonly-diagnostics\.jsonl/u);
-  assert.match(source, /\[data-id\^="1-\{"\]/u);
+  assert.match(source, /ZOOM_MESSAGE_REF_RE/u);
+  assert.match(source, /document\.querySelectorAll\("\[data-id\], \[id\]"\)/u);
+  assert.match(source, /img\[data-emoji\]/u);
+  assert.doesNotMatch(source, /new-chat-message__options button|ancestor-or-self::\*\[@role='row'\]|menuitemradio/u);
   assert.match(source, /recordKind:\s*"zoom-message-identity"/u);
   assert.match(source, /sourceMessageId/u);
   assert.match(source, /itemDataId/u);
@@ -288,10 +315,10 @@ test("read-only chat diagnostics observes without sending or calling webhook", a
 });
 
 test("chat diagnostics fingerprint is stable and separates duplicates from different authors", () => {
-  const first = buildChatMessageFingerprint({ displayName: "Alex", text: "111", timestamp: "10:00", domPath: "div:1" });
-  const duplicate = buildChatMessageFingerprint({ displayName: "Alex", text: "111", timestamp: "10:00", domPath: "div:1" });
-  const sameTextOtherNode = buildChatMessageFingerprint({ displayName: "Alex", text: "111", timestamp: "10:00", domPath: "div:2" });
-  const otherAuthor = buildChatMessageFingerprint({ displayName: "Other", text: "111", timestamp: "10:00", domPath: "div:1" });
+  const first = buildChatMessageFingerprint({ displayName: "Маша", text: "111", timestamp: "10:00", domPath: "div:1" });
+  const duplicate = buildChatMessageFingerprint({ displayName: "Маша", text: "111", timestamp: "10:00", domPath: "div:1" });
+  const sameTextOtherNode = buildChatMessageFingerprint({ displayName: "Маша", text: "111", timestamp: "10:00", domPath: "div:2" });
+  const otherAuthor = buildChatMessageFingerprint({ displayName: "Маня", text: "111", timestamp: "10:00", domPath: "div:1" });
   assert.equal(first, duplicate);
   assert.notEqual(first, sameTextOtherNode);
   assert.notEqual(first, otherAuthor);
@@ -312,6 +339,13 @@ test("sender explicitly turns microphone and video off after joining", async () 
   assert.match(source, /mute my microphone/iu);
   assert.match(source, /stop my video/iu);
   assert.match(source, /await ensureMeetingMediaOff\(this\.page\)/u);
+});
+
+test("pre-meeting host wait is not reported as joined merely because microphone controls exist", () => {
+  const waiting = classifyZoomPresenceText("\u0414\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c, \u043a\u043e\u0433\u0434\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440 \u043d\u0430\u0447\u043d\u0435\u0442 \u043a\u043e\u043d\u0444\u0435\u0440\u0435\u043d\u0446\u0438\u044e. \u041c\u0438\u043a\u0440\u043e\u0444\u043e\u043d");
+  assert.deepEqual(waiting, { waitingRoom: true, zoomJoined: false });
+  const joined = classifyZoomPresenceText("\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 3 \u0427\u0430\u0442 \u0412\u044b\u0439\u0442\u0438");
+  assert.deepEqual(joined, { waitingRoom: false, zoomJoined: true });
 });
 
 test("docker packaging is sender-only and contains no obvious secrets", async () => {
@@ -339,8 +373,8 @@ test("docker packaging is sender-only and contains no obvious secrets", async ()
   assert.match(envExample, /ZOOM_AUTH_PASSWORD=\s*(?:\r?\n)/u);
   assert.match(envExample, /ZOOM_AUTH_WAIT_FOR_MANUAL=false/u);
   assert.doesNotMatch(envExample, /replace-with-worker-secret|super-secret|sk-[a-z0-9]/iu);
-  assert.match(runbook, /не читает входящий Zoom-чат/iu);
-  assert.match(runbook, /не использует Telegram/iu);
+  assert.match(runbook, /старый `zoom-bridge` удалён/iu);
+  assert.match(runbook, /не вызывает старые webhook\/ingest-маршруты/iu);
 });
 
 test("auth setup uses server env credentials without hardcoded secrets or artifacts", async () => {

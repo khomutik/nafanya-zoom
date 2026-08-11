@@ -103,7 +103,7 @@ docker compose -f control-agent.compose.example.yml up -d
 7. Скопируйте development Client Secret в `ZOOM_APP_CLIENT_SECRET` на VPS.
 8. Добавьте тестовых пользователей приложения или одобрите его для нужных пользователей аккаунта.
 
-Приложение запрашивает в `zoomSdk.config()` возможности `appPopout`, `setDynamicIndicator`, `removeDynamicIndicator`, `extendDynamicIndicator`, `shareComputerAudio` и `onParticipantChange`. Если Zoom изменит названия разделов Marketplace, ориентируйтесь на Meetings + Zoom Apps SDK, а не на древние скриншоты из интернета — они стареют бодрее молока.
+Приложение запрашивает в `zoomSdk.config()` возможности `appPopout`, `getSupportedJsApis`, `setDynamicIndicator`, `removeDynamicIndicator` и `extendDynamicIndicator`. Оно не слушает вход участников и не передаёт самодельный звук через `shareComputerAudio`. Если Zoom изменит названия разделов Marketplace, ориентируйтесь на Meetings + Zoom Apps SDK, а не на древние скриншоты из интернета — они стареют бодрее молока.
 
 После изменения `.env` перезапустите control-agent:
 
@@ -142,9 +142,10 @@ Markdown остаётся на компьютере администратора
 5. `Высказался`, `Вернуть`, `Пропускает` и удаление сохраняют порядок;
 6. спикерская не смешивается с обычной очередью;
 7. таймер, запущенный с телефона, виден на настольном Zoom;
-8. семь гудков передаются участникам один раз;
-9. новый участник получает актуальное обычное состояние после задержки;
-10. после остановки sender не продолжает опрашивать Zoom.
+8. нативный сигнал Zoom слышен на компьютере и телефоне;
+9. вход нового участника не публикует темы повторно;
+10. общая красная кнопка одним действием очищает обычную очередь, доп. темы и вопросы спикеру;
+11. после остановки sender не продолжает опрашивать Zoom.
 
 ## 9. Обновление
 
@@ -159,4 +160,3 @@ npm --prefix worker run deploy
 docker compose -p nafanya-zoom-sender -f sender/compose.example.yml build
 docker compose -f sender/control-agent.compose.example.yml up -d --force-recreate
 ```
-

@@ -12,6 +12,7 @@ const DIAGNOSTIC_BODY_TEXT_LIMIT = 2000;
 const DIAGNOSTIC_HTML_LIMIT = 5000;
 const CHAT_DIAGNOSTIC_TEXT_LIMIT = 1200;
 const CHAT_DIAGNOSTIC_DOM_LIMIT = 2500;
+const ZOOM_MESSAGE_REF_RE = /^\d+-\{[0-9a-f-]{20,}\}$/iu;
 const DEFAULT_BROWSER_ARGS = [
   "--no-sandbox",
   "--disable-dev-shm-usage",
@@ -22,6 +23,17 @@ const DEFAULT_BROWSER_ARGS = [
   "--disable-infobars"
 ];
 const ZOOM_RESPONSE_RE = /(?:^|\.)zoom\.us$|zoomcdn\.com$|zmdownload\.zoom\.us$/iu;
+
+function classifyZoomPresenceText(bodyText, chatOpen = false) {
+  const text = String(bodyText || "");
+  const waitingRoom = /waiting room|host.*let you in|wait.*host.*start|\u043e\u0436\u0438\u0434\u0430|\u0434\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c[\s\S]{0,80}\u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440[\s\S]{0,80}\u043d\u0430\u0447\u043d/iu.test(text);
+  const zoomJoined = !waitingRoom && (Boolean(chatOpen) || /leave|mute|unmute|participants|chat|\u0432\u044b\u0439\u0442\u0438|\u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438|\u0447\u0430\u0442/iu.test(text));
+  return { waitingRoom, zoomJoined };
+}
+
+function shouldAttemptChatRecovery({ chatOpen, zoomJoined, waitingRoom, lastAttemptAt = 0, now = Date.now(), intervalMs = 10000 } = {}) {
+  return !chatOpen && Boolean(zoomJoined) && !waitingRoom && now - Number(lastAttemptAt || 0) >= intervalMs;
+}
 
 async function clickFirst(page, selectors, { timeout = 1500 } = {}) {
   for (const selector of selectors) {
@@ -277,6 +289,62 @@ async function sendChatText(page, text) {
   return { sent: false, ack: false };
 }
 
+function normalizeComparableChatText(value) {
+  return String(value || "").replace(/\s+/gu, " ").trim();
+}
+
+function isZoomMessageRef(value) {
+  return ZOOM_MESSAGE_REF_RE.test(String(value || ""));
+}
+
+function isOwnIdentityChatRecord(record = {}) {
+  const sourceMessageId = String(record.sourceMessageId || record.itemDataId || "");
+  if (record.recordKind !== "zoom-message-identity" || !isZoomMessageRef(sourceMessageId)) return false;
+  const rawDom = String(record.rawDom || "");
+  const authors = [record.displayName, record.groupAuthorName].map((value) => normalizeComparableChatText(value).toLocaleLowerCase("ru-RU"));
+  const ariaLabel = normalizeComparableChatText(record.ariaLabel);
+  return /new-chat-message__text-box--self/u.test(rawDom)
+    || authors.some((author) => author === "you" || author === "\u0432\u044b")
+    || /^(?:you|\u0432\u044b)\s+(?:to|\u0434\u043b\u044f|\u043a\u043e\u043c\u0443)\s+/iu.test(ariaLabel);
+}
+
+function exactOwnChatRecords(records, text, excludedRefs = new Set()) {
+  const expected = normalizeComparableChatText(text);
+  return (Array.isArray(records) ? records : []).filter((record) => {
+    if (!isOwnIdentityChatRecord(record)) return false;
+    if (normalizeComparableChatText(record.text) !== expected) return false;
+    const ref = String(record.sourceMessageId || record.itemDataId || "");
+    return ref && !excludedRefs.has(ref);
+  });
+}
+
+async function waitForOwnChatMessage(page, text, beforeRefs = new Set(), { timeoutMs = 6000, pollMs = 300 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const records = await collectVisibleChatMessages(page);
+    const matches = exactOwnChatRecords(records, text, beforeRefs);
+    if (matches.length) return matches.at(-1);
+    await page.waitForTimeout(pollMs).catch(() => null);
+  }
+  return null;
+}
+
+async function sendVerifiedChatText(page, text) {
+  if (!await openChatPanel(page)) return { sent: false, ack: false, reason: "chat_not_open" };
+  const before = await collectVisibleChatMessages(page);
+  const beforeRefs = new Set(before.filter(isOwnIdentityChatRecord).map((record) => String(record.sourceMessageId || record.itemDataId || "")).filter(Boolean));
+  const sent = await sendChatText(page, text);
+  if (!sent.sent) return sent;
+  const record = await waitForOwnChatMessage(page, text, beforeRefs);
+  if (!record) return { sent: true, ack: false, reason: "message_not_verified" };
+  return {
+    sent: true,
+    ack: true,
+    messageRef: String(record.sourceMessageId || record.itemDataId || ""),
+    messageText: String(text || "")
+  };
+}
+
 function sanitizePageUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -407,6 +475,16 @@ async function collectPageDiagnostics(page) {
 async function collectVisibleChatMessages(page) {
   return page.evaluate(({ textLimit, domLimit }) => {
     const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const zoomText = (element) => {
+      if (!element) return "";
+      const clone = element.cloneNode(true);
+      for (const image of clone.querySelectorAll("img[data-emoji]")) {
+        image.replaceWith(document.createTextNode(clean(image.getAttribute("data-emoji"))));
+      }
+      for (const lineBreak of clone.querySelectorAll("br")) lineBreak.replaceWith(document.createTextNode("\n"));
+      for (const block of clone.querySelectorAll("p, li")) block.append(document.createTextNode("\n"));
+      return clean(clone.textContent || "");
+    };
     const visible = (element) => {
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
@@ -595,22 +673,32 @@ async function collectVisibleChatMessages(page) {
         });
       }
     });
-    const identityRecords = [...document.querySelectorAll('[data-id^="1-{"]')]
-      .filter(visible)
-      .map((item, index) => {
-        const messageBox = item.querySelector('[id^="1-{"]');
-        const messageRow = item.querySelector('[id^="chat-message-content-"][aria-label]');
-        const sender = item.querySelector('[class*="sender" i][data-name], [class*="sender" i]');
-        const receiver = item.querySelector('[class*="receiver" i][data-name], [class*="receiver" i]');
-        const time = item.querySelector('[class*="time-stamp" i], time, [datetime]');
-        const text = clean(messageBox?.innerText || messageRow?.innerText || item.innerText).slice(0, textLimit);
-        const sourceMessageId = clean(item.getAttribute("data-id") || messageBox?.getAttribute("id"));
+    const identityRefs = [];
+    const seenIdentityRefs = new Set();
+    for (const element of document.querySelectorAll("[data-id], [id]")) {
+      const sourceMessageId = clean(element.getAttribute("data-id") || element.getAttribute("id"));
+      if (!/^\d+-\{[0-9a-f-]{20,}\}$/iu.test(sourceMessageId) || seenIdentityRefs.has(sourceMessageId)) continue;
+      seenIdentityRefs.add(sourceMessageId);
+      identityRefs.push({ item: element, sourceMessageId });
+    }
+    const identityRecords = identityRefs
+      .filter(({ item }) => visible(item))
+      .map(({ item, sourceMessageId }, index) => {
+        const messageBox = item.getAttribute("id") === sourceMessageId
+          ? item
+          : [...item.querySelectorAll("[id]")].find((element) => clean(element.getAttribute("id")) === sourceMessageId);
+        const messageRow = item.closest('[id^="chat-message-content-"][aria-label]') || item.querySelector('[id^="chat-message-content-"][aria-label]');
+        const recordRoot = messageRow || item;
+        const sender = recordRoot.querySelector('[class*="sender" i][data-name], [class*="sender" i]');
+        const receiver = recordRoot.querySelector('[class*="receiver" i][data-name], [class*="receiver" i]');
+        const time = recordRoot.querySelector('[class*="time-stamp" i], time, [datetime]');
+        const text = zoomText(messageBox || messageRow || item).slice(0, textLimit);
         return {
           displayName: clean(sender?.getAttribute("data-name") || sender?.textContent),
           text,
           timestamp: clean(time?.getAttribute("datetime") || time?.getAttribute("title") || time?.textContent),
           domPath: `zoom-message:${index}`,
-          rawDom: String(item.outerHTML || "").slice(0, domLimit),
+          rawDom: String(recordRoot.outerHTML || "").slice(0, domLimit),
           groupAuthorName: clean(sender?.getAttribute("data-name") || sender?.textContent),
           groupTimestamp: clean(time?.getAttribute("datetime") || time?.getAttribute("title") || time?.textContent),
           groupText: clean(item.innerText || item.textContent).slice(0, textLimit),
@@ -722,6 +810,7 @@ export class PlaywrightZoomSender {
     this.lastDiagnosticsDir = null;
     this.diagnosticsRun = null;
     this.chatDiagnosticFingerprints = new Set();
+    this.lastChatOpenAttemptAt = 0;
     this.diagnosticsEvents = {
       console: [],
       pageErrors: [],
@@ -832,10 +921,20 @@ export class PlaywrightZoomSender {
 
   async getPresence() {
     if (!this.page) return { ...this.presence };
-    const chatOpen = await hasChatInput(this.page);
+    let chatOpen = await hasChatInput(this.page);
     const bodyText = await this.page.locator("body").innerText({ timeout: 1500 }).catch(() => "");
-    const waitingRoom = /waiting room|host.*let you in|\u043e\u0436\u0438\u0434\u0430/iu.test(bodyText);
-    const zoomJoined = chatOpen || /leave|mute|unmute|participants|chat|\u0447\u0430\u0442|\u043c\u0438\u043a\u0440\u043e\u0444\u043e\u043d/iu.test(bodyText);
+    const detected = classifyZoomPresenceText(bodyText, chatOpen);
+    if (shouldAttemptChatRecovery({
+      chatOpen,
+      zoomJoined: detected.zoomJoined,
+      waitingRoom: detected.waitingRoom,
+      lastAttemptAt: this.lastChatOpenAttemptAt
+    })) {
+      this.lastChatOpenAttemptAt = Date.now();
+      await openChatPanel(this.page).catch(() => false);
+      chatOpen = await hasChatInput(this.page);
+    }
+    const { waitingRoom, zoomJoined } = classifyZoomPresenceText(bodyText, chatOpen);
     const chatUnavailable = !chatOpen && await hasChatUnavailableNotice(this.page);
     this.presence = {
       zoomPageOpen: !this.page.isClosed(),
@@ -848,9 +947,9 @@ export class PlaywrightZoomSender {
     return { ...this.presence };
   }
 
-  async sendMessage(text) {
+  async sendMessage(text, { verifyOwn = false } = {}) {
     if (!this.page) return { sent: false, ack: false };
-    const result = await sendChatText(this.page, text);
+    const result = verifyOwn ? await sendVerifiedChatText(this.page, text) : await sendChatText(this.page, text);
     this.presence = await this.getPresence();
     return result;
   }
@@ -911,4 +1010,4 @@ export class PlaywrightZoomSender {
   }
 }
 
-export { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, collectVisibleChatMessages, collectVisibleControls, ensureMeetingMediaOff, hasChatInput, openChatPanel, sanitizeDiagnosticText, sanitizePageUrl, saveDiagnosticsSnapshot };
+export { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, collectVisibleChatMessages, collectVisibleControls, ensureMeetingMediaOff, exactOwnChatRecords, hasChatInput, isOwnIdentityChatRecord, normalizeComparableChatText, openChatPanel, sanitizeDiagnosticText, sanitizePageUrl, saveDiagnosticsSnapshot, sendVerifiedChatText, shouldAttemptChatRecovery };
