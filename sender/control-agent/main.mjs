@@ -21,7 +21,6 @@ const config = {
   workerBaseUrl: env("WORKER_BASE_URL").replace(/\/+$/u, ""),
   zoomOnlySecret: env("ZOOM_ONLY_SECRET") || env("ZOOM_BRIDGE_SECRET"),
   panelToken: env("ZOOM_PANEL_TOKEN") || env("ZOOM_V2_PANEL_TOKEN"),
-  appTitle: env("ZOOM_APP_TITLE", "Nafanya Zoom Bridge"),
   healthUrl: env("ZOOM_CONTROL_HEALTH_URL", "http://host.docker.internal:3097/health")
 };
 if (!config.token || !config.workerBaseUrl || !config.zoomOnlySecret || !config.panelToken) throw new Error("Missing control-agent configuration");
@@ -31,7 +30,8 @@ const json = (res, status, body) => { res.writeHead(status, { "content-type": "a
 const same = (a, b) => { const x = Buffer.from(String(a || "")); const y = Buffer.from(String(b || "")); return x.length === y.length && timingSafeEqual(x, y); };
 const cookies = (request) => Object.fromEntries(String(request.headers.cookie || "").split(";").map((item) => item.trim().split("=")).filter(([key]) => key));
 const adminAuthorized = (request) => same(cookies(request)[config.cookieName], config.token) || same(request.headers["x-nafanya-control-token"], config.token);
-const zoomAppAuthorized = (request) => Boolean(verifyZoomAppSession(cookies(request)[config.zoomAppCookieName], config.zoomAppSessionSecret));
+const zoomAppSession = (request) => verifyZoomAppSession(cookies(request)[config.zoomAppCookieName], config.zoomAppSessionSecret);
+const zoomAppAuthorized = (request) => Boolean(zoomAppSession(request));
 const accessLevel = (request) => adminAuthorized(request) ? "admin" : zoomAppAuthorized(request) ? "zoom_app" : null;
 
 const zoomAppHtmlHeaders = (sessionCookie = "") => ({
@@ -44,8 +44,7 @@ const zoomAppHtmlHeaders = (sessionCookie = "") => ({
   "x-content-type-options": "nosniff",
   ...(sessionCookie ? { "set-cookie": sessionCookie } : {})
 });
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-const zoomAppLockedHtml = () => `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(config.appTitle)}</title></head><body><p>\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0432\u043d\u0443\u0442\u0440\u0438 \u043a\u043e\u043d\u0444\u0435\u0440\u0435\u043d\u0446\u0438\u0438 Zoom.</p></body></html>`;
+const zoomAppLockedHtml = "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Nafanya Zoom</title></head><body><p>\u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0432\u043d\u0443\u0442\u0440\u0438 \u043a\u043e\u043d\u0444\u0435\u0440\u0435\u043d\u0446\u0438\u0438 Zoom.</p></body></html>";
 
 async function proxyWorker(request, res, pathname, search = "", access = "admin") {
   const body = request.method === "POST" ? await new Promise((resolve) => { const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", () => resolve(Buffer.concat(chunks))); }) : undefined;
@@ -83,17 +82,17 @@ const server = http.createServer(async (request, res) => {
     if (request.method === "GET" && url.pathname === "/zoom-app") {
       if (!config.zoomAppClientSecret || !config.zoomAppSessionSecret) return json(res, 503, { ok: false, error: "zoom_app_not_configured" });
       try {
-        const context = decryptZoomAppContext(request.headers["x-zoom-app-context"], config.zoomAppClientSecret);
-        const session = issueZoomAppSession(context, config.zoomAppSessionSecret);
+        const sessionContext = decryptZoomAppContext(request.headers["x-zoom-app-context"], config.zoomAppClientSecret);
+        const session = issueZoomAppSession(sessionContext, config.zoomAppSessionSecret);
         res.writeHead(200, zoomAppHtmlHeaders(buildZoomAppSessionCookie(config.zoomAppCookieName, session)));
-        return res.end(buildControlHtml({ zoomApp: true, appTitle: config.appTitle }));
+        return res.end(buildControlHtml({ zoomApp: true }));
       } catch {
         if (!zoomAppAuthorized(request)) {
           res.writeHead(200, zoomAppHtmlHeaders());
-          return res.end(zoomAppLockedHtml());
+          return res.end(zoomAppLockedHtml);
         }
         res.writeHead(200, zoomAppHtmlHeaders());
-        return res.end(buildControlHtml({ zoomApp: true, appTitle: config.appTitle }));
+        return res.end(buildControlHtml({ zoomApp: true }));
       }
     }
     const access = accessLevel(request);
@@ -102,7 +101,7 @@ const server = http.createServer(async (request, res) => {
       if (access !== "admin") return json(res, 403, { ok: false, error: "admin_required" });
       res.writeHead(204, { "cache-control": "no-store" }); return res.end();
     }
-    if (request.method === "GET" && url.pathname === "/app") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(buildControlHtml({ appTitle: config.appTitle })); }
+    if (request.method === "GET" && url.pathname === "/app") { res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); return res.end(buildControlHtml()); }
     if (request.method === "GET" && url.pathname === "/worker-panel") return proxyWorker(request, res, "/zoom-only/app", url.search, access);
     if (["/zoom-only/status", "/zoom-only/app/action", "/zoom-only/library/status", "/zoom-only/library/import"].includes(url.pathname)) {
       if (request.method === "POST" && url.pathname === "/zoom-only/library/import" && access !== "admin") return json(res, 403, { ok: false, error: "admin_required" });
@@ -124,4 +123,4 @@ const server = http.createServer(async (request, res) => {
     return json(res, 500, { ok: false, error: "control_agent_error" });
   }
 });
-server.listen(config.port, config.host, () => console.log(`${config.appTitle} control listening on ${config.host}:${config.port}`));
+server.listen(config.port, config.host, () => console.log(`Nafanya Zoom control listening on ${config.host}:${config.port}`));

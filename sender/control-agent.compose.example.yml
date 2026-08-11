@@ -4,6 +4,11 @@ services:
     image: node:22-bookworm-slim
     container_name: nafanya-zoom-control
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     network_mode: host
     working_dir: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}
     command: ["node", "control-agent/main.mjs"]
@@ -29,4 +34,5 @@ services:
 
 volumes:
   zoom-sender-profile:
+    external: true
     name: nafanya-zoom-sender_zoom-sender-profile

@@ -1,8 +1,8 @@
 export class Backoff {
-  constructor({ minIntervalMs = 1500, maxIntervalMs = 30000, errorIntervalMs = 10000 } = {}) {
+  constructor({ minIntervalMs = 1500, maxIntervalMs = 1500, errorIntervalMs = 10000 } = {}) {
     this.minIntervalMs = minIntervalMs;
     this.maxIntervalMs = Math.max(maxIntervalMs, minIntervalMs);
-    this.errorIntervalMs = Math.min(Math.max(errorIntervalMs, minIntervalMs), this.maxIntervalMs);
+    this.errorIntervalMs = Math.max(errorIntervalMs, minIntervalMs);
     this.currentDelayMs = minIntervalMs;
   }
 
@@ -12,7 +12,7 @@ export class Backoff {
   }
 
   onError() {
-    this.currentDelayMs = Math.min(this.maxIntervalMs, Math.max(this.errorIntervalMs, this.currentDelayMs * 2));
+    this.currentDelayMs = this.errorIntervalMs;
     return this.currentDelayMs;
   }
 

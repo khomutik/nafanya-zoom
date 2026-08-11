@@ -6,6 +6,11 @@ services:
     container_name: nafanya-zoom-sender-v2
     restart: unless-stopped
     stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file:
       - .env
     ports:

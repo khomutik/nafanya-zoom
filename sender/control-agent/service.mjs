@@ -15,6 +15,7 @@ function publicHealth(health = null) {
     status: String(health.status || "unhealthy"),
     workerAvailable: Boolean(health.workerAvailable),
     zoomJoined: Boolean(health.zoomJoined),
+    waitingRoom: Boolean(health.waitingRoom),
     chatOpen: Boolean(health.chatOpen),
     chatUnavailable: Boolean(health.chatUnavailable),
     chatReason: health.chatReason ? String(health.chatReason) : null,
@@ -66,6 +67,10 @@ export class ZoomControlService {
       mode = "error";
       this.lastError = workerUnavailableMessage(health);
     }
+    else if (running && health?.zoomJoined && !health?.waitingRoom && !health?.chatOpen) {
+      mode = "error";
+      this.lastError = "\u041d\u0430\u0444\u0430\u043d\u044f \u0432\u043e\u0448\u0451\u043b \u0432 Zoom, \u043d\u043e \u0447\u0430\u0442 \u043d\u0435 \u043e\u0442\u043a\u0440\u044b\u043b\u0441\u044f.";
+    }
     else if (running && await this.ops.detectAuthRequired().catch(() => false)) mode = "auth_required";
     else if (running && health?.status === "unhealthy") mode = "error";
     else if (running && this.lastMode === "error" && this.lastError) mode = "error";
@@ -87,6 +92,7 @@ export class ZoomControlService {
 
   async #start() {
     try {
+      if (await this.ops.isOldBridgeRunning()) throw new Error("Старый Zoom bridge запущен. Позовите администратора.");
       if (!await this.ops.isSenderRunning()) {
         const locks = await this.ops.profileLocks();
         if (locks.length) await this.ops.clearProfileLocks();
@@ -117,7 +123,7 @@ export class ZoomControlService {
         await this.ops.sleep(this.pollMs);
       }
       this.lastMode = "error";
-      this.lastError = "Бот не успел войти в Zoom и открыть чат.";
+      this.lastError = "Нафаня не успел войти в Zoom и открыть чат.";
     } catch (error) {
       this.lastMode = "error";
       this.lastError = safeError(error);
@@ -176,7 +182,7 @@ export class ZoomControlService {
     } catch (error) {
       this.authSetupState = "auth_setup_failed";
       this.lastMode = "auth_required";
-      this.lastError = this.authCancelled ? "Восстановление входа остановлено." : "Не удалось сохранить вход Zoom. Обратитесь к администратору сервера.";
+      this.lastError = this.authCancelled ? "Восстановление входа остановлено." : "Не удалось сохранить вход Zoom. Позовите Машу или администратора.";
     } finally {
       await this.ops.stopAuthSetup(this.authContainerId).catch(() => null);
       await this.ops.setRuntimeMode("safe").catch(() => null);

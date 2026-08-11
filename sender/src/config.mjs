@@ -18,12 +18,13 @@ function readList(value) {
 
 export function loadConfig(env = process.env) {
   const minIntervalMs = readPositiveInt(env.ZOOM_SENDER_MIN_POLL_MS ?? env.ZOOM_SENDER_MIN_INTERVAL_MS, 1500, { min: 1000, max: 60000 });
-  const maxIntervalMs = readPositiveInt(env.ZOOM_SENDER_MAX_POLL_MS ?? env.ZOOM_SENDER_MAX_INTERVAL_MS, 30000, { min: minIntervalMs, max: 120000 });
+  const maxIntervalMs = readPositiveInt(env.ZOOM_SENDER_MAX_POLL_MS ?? env.ZOOM_SENDER_MAX_INTERVAL_MS, 1500, { min: minIntervalMs, max: 120000 });
   return {
     workerBaseUrl: String(env.WORKER_BASE_URL || "").replace(/\/+$/u, ""),
     zoomMeetingUrl: String(env.ZOOM_MEETING_URL || "").trim(),
     participantName: String(env.ZOOM_DISPLAY_NAME ?? env.ZOOM_PARTICIPANT_NAME ?? "Nafanya").trim(),
     zoomBridgeSecret: String(env.ZOOM_ONLY_SECRET ?? env.ZOOM_BRIDGE_SECRET ?? "").trim(),
+    outboxMeetingId: String(env.ZOOM_SENDER_OUTBOX_MEETING_ID || "").replace(/[^0-9A-Za-z_-]/gu, "").slice(0, 128),
     dryRun: readBool(env.ZOOM_SENDER_DRY_RUN, false),
     mockOutbox: readBool(env.ZOOM_SENDER_MOCK_OUTBOX, false),
     mockMessage: String(env.ZOOM_SENDER_MOCK_MESSAGE || "Dry-run Zoom message").trim(),
@@ -34,7 +35,7 @@ export function loadConfig(env = process.env) {
     browserArgs: readList(env.ZOOM_SENDER_BROWSER_ARGS),
     minIntervalMs,
     maxIntervalMs,
-    errorIntervalMs: readPositiveInt(env.ZOOM_SENDER_ERROR_POLL_MS ?? env.ZOOM_SENDER_ERROR_INTERVAL_MS, 10000, { min: 1000, max: maxIntervalMs }),
+    errorIntervalMs: readPositiveInt(env.ZOOM_SENDER_ERROR_POLL_MS ?? env.ZOOM_SENDER_ERROR_INTERVAL_MS, 10000, { min: 1000, max: 120000 }),
     outboxLimit: readPositiveInt(env.ZOOM_SENDER_OUTBOX_LIMIT, 20, { min: 1, max: 50 }),
     healthHost: String(env.ZOOM_SENDER_HEALTH_HOST || "127.0.0.1").trim() || "127.0.0.1",
     healthPort: readPositiveInt(env.ZOOM_SENDER_HEALTH_PORT, 3097, { min: 1, max: 65535 })

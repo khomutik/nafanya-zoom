@@ -26,7 +26,6 @@ export class ZoomSenderService {
         const delay = this.backoff.onMessages(0);
         this.health.updateBackoff(this.backoff);
         this.health.clearError();
-        this.logger.info?.(`Zoom Sender outbox empty; next poll in ${delay}ms`);
         return { messages: 0, ackIds: [], delayMs: delay };
       }
 

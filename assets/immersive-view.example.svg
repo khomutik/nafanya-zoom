@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <filter id="paper"><feTurbulence baseFrequency="0.45" numOctaves="3" seed="7" result="noise"/><feColorMatrix in="noise" values="1 0 0 0 .78 0 1 0 0 .68 0 0 1 0 .48 0 0 0 .055 0"/><feBlend in="SourceGraphic" mode="multiply"/></filter>
+  </defs>
+  <rect width="1920" height="1080" fill="#fff4d8" filter="url(#paper)"/>
+  <path d="M18 24H1902V1056H18Z" fill="none" stroke="#d96f21" stroke-width="24" opacity=".95"/>
+  <path d="M38 43H1882V1037H38Z" fill="none" stroke="#12234f" stroke-width="10" opacity=".95"/>
+  <text x="960" y="120" text-anchor="middle" font-family="Arial, sans-serif" font-size="76" font-weight="800" fill="#12234f">YOUR GROUP NAME</text>
+  <text x="960" y="178" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" fill="#7b6650">Replace the title, export as 1920×1080 PNG, then upload as a custom Immersive View scene.</text>
+</svg>

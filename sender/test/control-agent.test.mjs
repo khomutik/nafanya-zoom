@@ -27,6 +27,7 @@ function fakeOps(overrides = {}) {
   const calls = [];
   const ops = {
     calls,
+    async isOldBridgeRunning() { return false; },
     async isSenderRunning() { return false; },
     async profileLocks() { return []; },
     async clearProfileLocks() { calls.push("clear-locks"); },
@@ -34,6 +35,7 @@ function fakeOps(overrides = {}) {
     async startSender() { calls.push("start-sender"); },
     async stopSender() { calls.push("stop-sender"); },
     async getSenderHealth() { return { status: "healthy", zoomJoined: true, chatOpen: true, lastError: null }; },
+    async getQueueStatus() { return { queueOpen: false, outboxSize: 0 }; },
     async detectAuthRequired() { return false; },
     async startAuthSetup() { calls.push("auth-setup:start"); return "a".repeat(64); },
     async getAuthSetupState() { return { state: "completed" }; },
@@ -61,6 +63,25 @@ test("control start uses only live mode and sender start", async () => {
   assert.deepEqual(ops.calls, ["mode:live", "start-sender"]);
   assert.equal((await service.status()).mode, "ready");
   assert.ok(!ops.calls.some((call) => /bridge/iu.test(call)));
+});
+
+test("control start refuses to run while old bridge is active", async () => {
+  const ops = fakeOps({ async isOldBridgeRunning() { return true; } });
+  const service = new ZoomControlService(ops, { startTimeoutMs: 10, pollMs: 1 });
+  service.requestStart();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const status = await service.status();
+  assert.equal(status.mode, "error");
+  assert.match(status.lastError, /bridge/iu);
+  assert.ok(!ops.calls.includes("start-sender"));
+});
+
+test("control stop ignores preserved legacy queue state", async () => {
+  const ops = fakeOps({ async getQueueStatus() { return { queueOpen: true }; } });
+  const service = new ZoomControlService(ops);
+  const result = await service.stop();
+  assert.equal(result.ok, true);
+  assert.deepEqual(ops.calls, ["stop-sender", "mode:safe"]);
 });
 
 test("control stop uses only sender stop and safe mode", async () => {
@@ -100,6 +121,19 @@ test("public health exposes readiness reasons without secrets", () => {
   assert.equal(health.lastWorkerError.reason, "auth");
   assert.equal(health.lastWorkerError.httpStatus, 403);
   assert.doesNotMatch(health.lastWorkerError.message, /hidden|abcd/u);
+});
+
+test("an admitted sender with a closed chat is an error, not endless starting", async () => {
+  const ops = fakeOps({
+    async isSenderRunning() { return true; },
+    async getSenderHealth() {
+      return { status: "warning", workerAvailable: true, zoomJoined: true, waitingRoom: false, chatOpen: false, chatUnavailable: false };
+    }
+  });
+  const service = new ZoomControlService(ops);
+  const status = await service.status();
+  assert.equal(status.mode, "error");
+  assert.match(status.lastError, /\u0447\u0430\u0442 \u043d\u0435 \u043e\u0442\u043a\u0440\u044b\u043b\u0441\u044f/iu);
 });
 
 test("control start reports worker and chat readiness failures honestly", async () => {
@@ -151,19 +185,19 @@ test("env mode updates only whitelisted values", () => {
   assert.match(result, /ZOOM_MEETING_URL=private/u);
 });
 
-test("live mode never enables Zoom chat ingest", () => {
+test("live mode has no legacy Zoom chat-ingest switch", () => {
   assert.equal("ZOOM_SENDER_CHAT_INGEST_ENABLED" in SAFE_VALUES.live, false);
 });
 
 test("control page exposes human buttons and statuses without secrets", () => {
   const html = buildControlHtml();
-  assert.match(html, /Включить бота/u);
-  assert.match(html, /Выключить бота/u);
+  assert.match(html, /Включить Нафаню/u);
+  assert.match(html, /Выключить Нафаню/u);
   assert.match(html, /В Zoom, чат открыт/u);
   assert.match(html, /Нужен вход в Zoom/u);
   assert.match(html, /Открыть окно Zoom для входа/u);
   assert.match(html, /Остановить восстановление входа/u);
-  assert.match(html, /Нажмите Обновить или Выключить бота/u);
+  assert.match(html, /Нажмите Обновить или Выключить Нафаню/u);
   assert.match(html, /Нажмите Починить вход Zoom/u);
   assert.match(html, /\.\/vnc\/vnc\.html/u);
   assert.match(html, /\.auth-help\[hidden\]\{display:none\}/u);
@@ -188,12 +222,6 @@ test("control page exposes human buttons and statuses without secrets", () => {
   assert.doesNotMatch(html, /ZOOM_CONTROL_TOKEN|ZOOM_PANEL_TOKEN|ZOOM_MEETING_URL/u);
 });
 
-test("control page escapes a custom public app title", () => {
-  const html = buildControlHtml({ appTitle: '<script>alert("x")</script>' });
-  assert.doesNotMatch(html, /<script>alert/u);
-  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/u);
-});
-
 test("control page has a configurable shared host timer and collapsible tech panel", () => {
   const html = buildControlHtml({ zoomApp: true });
   assert.match(html, /<section class="control">[\s\S]*id="timerPanel"[\s\S]*id="techPanel"/u);
@@ -213,23 +241,20 @@ test("control page has a configurable shared host timer and collapsible tech pan
   assert.match(html, /setInterval\(syncSharedTimer,5000\)/u);
   assert.doesNotMatch(html, /setInterval\(syncSharedTimer,1500\)/u);
   assert.match(html, /configured\.product/u);
-  assert.match(html, /zoomProduct==="desktop"&&timerExecutor/u);
+  assert.match(html, /zoomProduct==="desktop"&&timerExecutor&&timerIndicatorSupported/u);
   assert.match(html, /configured\.product/u);
   assert.doesNotMatch(html, /timerPreview|Проверить 7 гудков/u);
-  assert.match(html, /withSound:false/u);
+  assert.match(html, /withSound:true/u);
   assert.match(html, /function indicatorMilliseconds\(\)\{return Math\.max\(0,Math\.ceil\(remainingNow\(\)\)\)\}/u);
   assert.match(html, /start:indicatorMilliseconds\(\)/u);
   assert.doesNotMatch(html, /indicatorMilliseconds\(\)[\s\S]{0,80}\/1000/u);
   assert.doesNotMatch(html, /songChoice|timerSound/u);
-  assert.match(html, /for\(let index=0;index<7;index\+\+\)/u);
-  assert.match(html, /shareComputerAudio\(\{action:"start",mode:"mono"\}\)/u);
-  assert.match(html, /shareComputerAudio\(\{action:"stop"\}\)/u);
-  assert.match(html, /capabilities:\[[^\]]*"shareComputerAudio"/u);
-  assert.match(html, /onParticipantChange/u);
-  assert.match(html, /meeting_board_replay/u);
+  assert.match(html, /getSupportedJsApis/u);
+  assert.match(html, /indicatorSupported:timerIndicatorSupported/u);
+  assert.doesNotMatch(html, /for\(let index=0;index<7;index\+\+|shareComputerAudio|onParticipantChange|meeting_board_replay|claim_finish/u);
   assert.match(html, /timerCommand\("extend",\{deltaMs:minutes\*60000\}\)/u);
   assert.doesNotMatch(html, /extendDuration:minutes\*60000/u);
-  assert.match(html, /new\(window\.AudioContext\|\|window\.webkitAudioContext\)\(\)/u);
+  assert.doesNotMatch(html, /AudioContext|webkitAudioContext/u);
   assert.doesNotMatch(html, /timer-note|id="timerNote"|Цифры видят|семь гудков слышат/u);
   assert.match(html, /document\.activeElement!==minutesInput/u);
 });
@@ -255,6 +280,13 @@ test("Zoom App page initializes the SDK and hides server administration", () => 
   assert.match(html, /async function authorizedFetch\(resource,options\)/u);
 });
 
+test("native timer treats an already absent indicator as a successful reset", () => {
+  const html = buildControlHtml({ zoomApp: true });
+  assert.match(html, /dynamicIndicatorAlreadyAbsent/u);
+  assert.match(html, /no dynamic indicator to remove/iu);
+  assert.match(html, /if\(dynamicIndicatorAlreadyAbsent\(error\)\)return true/u);
+});
+
 test("Zoom App context issues a meeting-length session after validation", () => {
   const nowMs = Date.UTC(2026, 6, 30, 20, 0, 0);
   const secret = "test-client-secret";
@@ -278,7 +310,7 @@ test("healthy refresh clears a stale timeout error", async () => {
   const ops = fakeOps({ async isSenderRunning() { return true; } });
   const service = new ZoomControlService(ops);
   service.lastMode = "error";
-  service.lastError = "Бот не успел войти в Zoom и открыть чат.";
+  service.lastError = "Нафаня не успел войти в Zoom и открыть чат.";
   const status = await service.status();
   assert.equal(status.mode, "ready");
   assert.equal(status.lastError, null);
@@ -287,7 +319,7 @@ test("healthy refresh clears a stale timeout error", async () => {
 test("stopped sender does not keep a stale error", async () => {
   const service = new ZoomControlService(fakeOps());
   service.lastMode = "error";
-  service.lastError = "Бот не успел войти в Zoom и открыть чат.";
+  service.lastError = "Нафаня не успел войти в Zoom и открыть чат.";
   const status = await service.status();
   assert.equal(status.mode, "off");
   assert.equal(status.lastError, null);
@@ -304,6 +336,8 @@ test("control HTTP entrypoint uses protected cookie and fixed routes", async () 
   assert.match(source, /\/auth\/check/u);
   assert.match(source, /x-zoom-app-context/u);
   assert.match(source, /\/zoom-app/u);
+  assert.match(source, /decryptZoomAppContext/u);
+  assert.doesNotMatch(source, /team_chat_test|ZOOM_TEAM_CHAT|workerMeetingId/u);
   assert.match(source, /zoomAppLockedHtml/u);
   assert.match(source, /strict-transport-security/u);
   assert.match(source, /url\.pathname === "\/zoom-only\/library\/import" && access !== "admin"/u);

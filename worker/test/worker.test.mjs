@@ -25,6 +25,15 @@ describe("Zoom-only Worker", () => {
     expect((await SELF.fetch("https://worker.test/zoom-only/app", { headers: panelHeaders })).status).toBe(200);
   });
 
+  it("clears the server-active day and never subscribes to participant joins", async () => {
+    const response = await SELF.fetch("https://worker.test/zoom-only/app", { headers: panelHeaders });
+    const panel = await response.text();
+    expect(panel).toContain("activeBoardDay=data.meetingBoard?.dayKey||activeBoardDay");
+    expect(panel).toContain('document.querySelector(\'[data-day="\'+activeBoardDay+\'"]\')');
+    expect(panel).not.toContain("onParticipantChange");
+    expect(panel).not.toContain("meeting_board_replay");
+  });
+
   it("allows identical queue text but ignores a repeated requestId", async () => {
     const first = await action({ action: "meeting_board_add_entry", dayKey: "monday", text: "Alex 111", requestId: "same-request" });
     const duplicateClick = await action({ action: "meeting_board_add_entry", dayKey: "monday", text: "Alex 111", requestId: "same-request" });
@@ -56,18 +65,19 @@ describe("Zoom-only Worker", () => {
     expect(status.meetingBoard.entries.some((item) => item.text === "Question to speaker")).toBe(false);
   });
 
-  it("coalesces simultaneous late-participant replays", async () => {
-    await action({ action: "meeting_board_add_entry", dayKey: "thursday", text: "Late replay test", requestId: crypto.randomUUID() });
-    const pull = await SELF.fetch("https://worker.test/zoom-only/outbox", { method: "POST", headers: senderHeaders, body: JSON.stringify({ limit: 50 }) });
-    const pending = await pull.json();
-    await SELF.fetch("https://worker.test/zoom-only/outbox", { method: "POST", headers: senderHeaders, body: JSON.stringify({ ackIds: pending.messages.map((item) => item.id), limit: 50 }) });
-    const replays = await Promise.all([
-      action({ action: "meeting_board_replay", requestId: crypto.randomUUID() }),
-      action({ action: "meeting_board_replay", requestId: crypto.randomUUID() }),
-      action({ action: "meeting_board_replay", requestId: crypto.randomUUID() })
-    ]);
-    expect(replays.filter(({ data }) => data.queued.length > 0)).toHaveLength(1);
-    expect(replays.filter(({ data }) => data.duplicate)).toHaveLength(2);
+  it("clears the ordinary queue, topics and speaker questions atomically", async () => {
+    await action({ action: "meeting_board_add_entry", dayKey: "thursday", text: "Queue entry", requestId: crypto.randomUUID() });
+    await action({ action: "meeting_board_add_topic", dayKey: "thursday", text: "Extra topic", requestId: crypto.randomUUID() });
+    await action({ action: "speaker_questions_add", text: "Speaker question", requestId: crypto.randomUUID() });
+    const requestId = crypto.randomUUID();
+    const cleared = await action({ action: "meeting_board_clear_all", dayKey: "thursday", requestId });
+    const duplicate = await action({ action: "meeting_board_clear_all", dayKey: "thursday", requestId });
+    expect(cleared.data.state.entries).toHaveLength(0);
+    expect(cleared.data.state.additionalTopics).toHaveLength(0);
+    expect(cleared.data.speakerQuestions.entries).toHaveLength(0);
+    expect(duplicate.data.duplicate).toBe(true);
+    const status = await (await SELF.fetch("https://worker.test/zoom-only/status", { headers: panelHeaders })).json();
+    expect(status.speakerQuestions.entries).toHaveLength(0);
   });
 
   it("delivers and acknowledges outbox messages", async () => {
@@ -81,15 +91,14 @@ describe("Zoom-only Worker", () => {
     expect((await ack.json()).messages.some((item) => ids.includes(item.id))).toBe(false);
   });
 
-  it("synchronizes timer commands and allows the finish sound once", async () => {
-    const started = await action({ action: "zoom_timer_action", timerAction: "start", baseMs: 60_000, remainingMs: 1, product: "desktop", instanceId: "desktop-1", requestId: crypto.randomUUID() });
+  it("leases the native indicator only to a supported desktop client", async () => {
+    const started = await action({ action: "zoom_timer_action", timerAction: "start", baseMs: 60_000, remainingMs: 1, product: "mobile", instanceId: "mobile-1", requestId: crypto.randomUUID() });
     expect(started.data.state.status).toBe("running");
+    expect(started.data.executorActive).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const sync = await action({ action: "zoom_timer_action", timerAction: "sync", product: "desktop", instanceId: "desktop-1" });
+    const sync = await action({ action: "zoom_timer_action", timerAction: "sync", product: "desktop", indicatorSupported: true, instanceId: "desktop-1" });
     expect(sync.data.state.status).toBe("finished");
-    const firstClaim = await action({ action: "zoom_timer_action", timerAction: "claim_finish", product: "desktop", instanceId: "desktop-1" });
-    const secondClaim = await action({ action: "zoom_timer_action", timerAction: "claim_finish", product: "desktop", instanceId: "desktop-1" });
-    expect(firstClaim.data.shouldBeep).toBe(true);
-    expect(secondClaim.data.shouldBeep).toBe(false);
+    expect(sync.data.executorActive).toBe(true);
+    expect(sync.data.isExecutor).toBe(true);
   });
 });
