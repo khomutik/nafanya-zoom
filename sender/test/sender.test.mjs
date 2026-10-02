@@ -6,7 +6,7 @@ import { startHealthServer } from "../src/health-server.mjs";
 import { HealthState } from "../src/health-state.mjs";
 import { ZoomSenderService } from "../src/sender.mjs";
 import { WorkerOutboxClient, classifyWorkerFetchError, classifyWorkerHttpStatus } from "../src/worker-client.mjs";
-import { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, exactOwnChatRecords, isOwnIdentityChatRecord, sanitizeDiagnosticText, sanitizePageUrl, shouldAttemptChatRecovery } from "../src/adapters/playwright-zoom-sender.mjs";
+import { DEFAULT_BROWSER_ARGS, PlaywrightZoomSender, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, exactOwnChatRecords, isOwnIdentityChatRecord, sanitizeDiagnosticText, sanitizePageUrl, shouldAttemptChatRecovery } from "../src/adapters/playwright-zoom-sender.mjs";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -25,6 +25,24 @@ function makeConfig() {
     errorIntervalMs: 10000
   };
 }
+
+test("browser shutdown cannot hang the sender indefinitely", async () => {
+  const adapter = new PlaywrightZoomSender({}, { browserCloseTimeoutMs: 5 });
+  adapter.browser = { close: () => new Promise(() => {}) };
+  adapter.page = { stale: true };
+  adapter.presence = { zoomPageOpen: true, zoomJoined: true, chatOpen: true };
+
+  await Promise.race([
+    adapter.stop(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("stop hung")), 100))
+  ]);
+
+  assert.equal(adapter.browser, null);
+  assert.equal(adapter.page, null);
+  assert.equal(adapter.presence.zoomPageOpen, false);
+  assert.equal(adapter.presence.zoomJoined, false);
+  assert.equal(adapter.presence.chatOpen, false);
+});
 
 test("chat recovery runs after admission but is throttled while Zoom is still opening the panel", () => {
   assert.equal(shouldAttemptChatRecovery({ chatOpen: false, zoomJoined: true, waitingRoom: false, lastAttemptAt: 0, now: 20000 }), true);
@@ -85,6 +103,7 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
     ZOOM_SENDER_MIN_POLL_MS: "2000",
     ZOOM_SENDER_MAX_POLL_MS: "25000",
     ZOOM_SENDER_ERROR_POLL_MS: "7000",
+    ZOOM_SENDER_RECOVERY_AFTER_MS: "240000",
     ZOOM_SENDER_HEALTH_PORT: "4001",
     ZOOM_SENDER_DIAGNOSTICS_DIR: "/tmp/zoom-diagnostics",
     ZOOM_SENDER_BROWSER_ARGS: "--one --two",
@@ -99,6 +118,7 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
   assert.equal(config.minIntervalMs, 2000);
   assert.equal(config.maxIntervalMs, 25000);
   assert.equal(config.errorIntervalMs, 7000);
+  assert.equal(config.zoomRecoveryAfterMs, 240000);
   assert.equal(config.healthPort, 4001);
   assert.equal(config.diagnosticsDir, "/tmp/zoom-diagnostics");
   assert.deepEqual(config.browserArgs, ["--one", "--two"]);
@@ -113,8 +133,10 @@ test("config reads dry-run and polling intervals from env with safe fallbacks", 
   assert.equal(fallback.minIntervalMs, 1500);
   assert.equal(fallback.maxIntervalMs, 1500);
   assert.equal(fallback.errorIntervalMs, 10000);
+  assert.equal(fallback.zoomRecoveryAfterMs, 180000);
   assert.equal(fallback.chatReadonlyDiagnostics, false);
   assert.equal(fallback.outboxMeetingId, "");
+  assert.equal(loadConfig({}).maxIntervalMs, 1500);
 });
 
 test("replacement safety matches only exact messages owned by Nafanya", () => {
@@ -210,7 +232,108 @@ test("sender does not ack failed individual sends that return no ack", async () 
   assert.deepEqual(result.ackIds, [1]);
 });
 
-test("interactive default keeps polling at 1.5 seconds even when outbox is empty", async () => {
+test("sender waits in the waiting room without polling Worker and resumes after admission", async () => {
+  let presence = { zoomPageOpen: true, zoomJoined: false, waitingRoom: true, chatOpen: false };
+  let pulls = 0;
+  let restarts = 0;
+  let now = 0;
+  const service = new ZoomSenderService({
+    workerClient: { async pull() { pulls += 1; return { messages: [] }; } },
+    zoomAdapter: {
+      async getPresence() { return presence; },
+      async restart() { restarts += 1; return presence; }
+    },
+    backoff: new Backoff(makeConfig()),
+    health: new HealthState(),
+    logger: { info() {}, warn() {} },
+    now: () => now,
+    zoomRecoveryAfterMs: 180000
+  });
+
+  const first = await service.runOnce();
+  now = 10 * 60 * 1000;
+  const second = await service.runOnce();
+  assert.equal(first.waitingForZoom, true);
+  assert.equal(second.waitingForZoom, true);
+  assert.equal(pulls, 0);
+  assert.equal(restarts, 0);
+
+  presence = { zoomPageOpen: true, zoomJoined: true, waitingRoom: false, chatOpen: true };
+  const admitted = await service.runOnce();
+  assert.equal(admitted.messages, 0);
+  assert.equal(pulls, 1);
+});
+
+test("sender recovers a closed Zoom page before touching the outbox", async () => {
+  let pulls = 0;
+  let restarts = 0;
+  const service = new ZoomSenderService({
+    workerClient: { async pull() { pulls += 1; return { messages: [] }; } },
+    zoomAdapter: {
+      async getPresence() { return { zoomPageOpen: false, zoomJoined: false, waitingRoom: false, chatOpen: false }; },
+      async restart() { restarts += 1; return { zoomPageOpen: true, zoomJoined: true, waitingRoom: false, chatOpen: true }; }
+    },
+    backoff: new Backoff(makeConfig()),
+    health: new HealthState(),
+    logger: { info() {}, warn() {} }
+  });
+
+  const result = await service.runOnce();
+  assert.equal(restarts, 1);
+  assert.equal(pulls, 1);
+  assert.equal(result.messages, 0);
+});
+
+test("sender recovers when Zoom presence inspection itself fails", async () => {
+  let pulls = 0;
+  let restarts = 0;
+  const service = new ZoomSenderService({
+    workerClient: { async pull() { pulls += 1; return { messages: [] }; } },
+    zoomAdapter: {
+      async getPresence() { throw new Error("page crashed"); },
+      async restart() { restarts += 1; return { zoomPageOpen: true, zoomJoined: true, waitingRoom: false, chatOpen: true }; }
+    },
+    backoff: new Backoff(makeConfig()),
+    health: new HealthState(),
+    logger: { info() {}, warn() {} }
+  });
+
+  const result = await service.runOnce();
+  assert.equal(restarts, 1);
+  assert.equal(pulls, 1);
+  assert.equal(result.messages, 0);
+});
+
+test("sender retries a failed initial browser launch instead of exiting", async () => {
+  let starts = 0;
+  let stops = 0;
+  let pulls = 0;
+  let service;
+  const zoomAdapter = {
+    async start() {
+      starts += 1;
+      if (starts === 1) throw new Error("temporary Zoom launch failure");
+      return { zoomPageOpen: true, zoomJoined: true, waitingRoom: false, chatOpen: true };
+    },
+    async getPresence() { return { zoomPageOpen: true, zoomJoined: true, waitingRoom: false, chatOpen: true }; },
+    async stop() { stops += 1; }
+  };
+  service = new ZoomSenderService({
+    workerClient: { async pull() { pulls += 1; return { messages: [] }; } },
+    zoomAdapter,
+    backoff: new Backoff(makeConfig()),
+    health: new HealthState(),
+    logger: { info() {}, warn() {} },
+    sleep: async () => { if (starts >= 2) await service.stop(); }
+  });
+
+  await service.runForever();
+  assert.equal(starts, 2);
+  assert.equal(pulls, 1);
+  assert.ok(stops >= 2);
+});
+
+test("an admitted sender checks an empty outbox every 1.5 seconds", async () => {
   const config = loadConfig({});
   const backoff = new Backoff(config);
   const service = new ZoomSenderService({
@@ -341,10 +464,28 @@ test("sender explicitly turns microphone and video off after joining", async () 
   assert.match(source, /await ensureMeetingMediaOff\(this\.page\)/u);
 });
 
+test("chat input lookup does not wait on every obsolete Zoom selector", async () => {
+  const fs = await import("node:fs/promises");
+  const source = await fs.readFile(new URL("../src/adapters/playwright-zoom-sender.mjs", import.meta.url), "utf8");
+  assert.match(source, /async function findVisibleChatInput\(page\)/u);
+  assert.match(source, /page\.evaluateHandle\(\(selectors\)/u);
+  assert.match(source, /element\.focus\(\)/u);
+  assert.doesNotMatch(source, /for \(const selector of selectors\)[\s\S]{0,300}isVisible\(\{ timeout: 1500 \}\)/u);
+  assert.doesNotMatch(source, /input\.click\(\{ timeout:/u);
+});
+
 test("pre-meeting host wait is not reported as joined merely because microphone controls exist", () => {
   const waiting = classifyZoomPresenceText("\u0414\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c, \u043a\u043e\u0433\u0434\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440 \u043d\u0430\u0447\u043d\u0435\u0442 \u043a\u043e\u043d\u0444\u0435\u0440\u0435\u043d\u0446\u0438\u044e. \u041c\u0438\u043a\u0440\u043e\u0444\u043e\u043d");
   assert.deepEqual(waiting, { waitingRoom: true, zoomJoined: false });
   const joined = classifyZoomPresenceText("\u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438 3 \u0427\u0430\u0442 \u0412\u044b\u0439\u0442\u0438");
+  assert.deepEqual(joined, { waitingRoom: false, zoomJoined: true });
+});
+
+test("an open chat wins over stale hidden waiting-room text", () => {
+  const joined = classifyZoomPresenceText(
+    "\u0414\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c, \u043a\u043e\u0433\u0434\u0430 \u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440 \u043d\u0430\u0447\u043d\u0435\u0442 \u043a\u043e\u043d\u0444\u0435\u0440\u0435\u043d\u0446\u0438\u044e.",
+    true
+  );
   assert.deepEqual(joined, { waitingRoom: false, zoomJoined: true });
 });
 
@@ -357,11 +498,15 @@ test("docker packaging is sender-only and contains no obvious secrets", async ()
     fs.readFile(new URL("../RUNBOOK.md", import.meta.url), "utf8")
   ]);
   assert.match(dockerfile, /node src\/main\.mjs/u);
+  assert.match(dockerfile, /exec node src\/main\.mjs/u);
   assert.match(dockerfile, /ZOOM_AUTH_SETUP/u);
   assert.match(dockerfile, /node src\/auth-setup\.mjs/u);
+  assert.match(dockerfile, /exec node src\/auth-setup\.mjs/u);
   assert.match(dockerfile, /playwright install --with-deps chromium/u);
   assert.match(dockerfile, /xvfb xauth x11-utils/u);
   assert.match(dockerfile, /Xvfb :99/u);
+  assert.match(dockerfile, /chmod 1777 \/tmp\/\.X11-unix/u);
+  assert.match(dockerfile, /rm -f \/tmp\/\.X99-lock \/tmp\/\.X11-unix\/X99/u);
   assert.match(compose, /service|zoom-sender/u);
   assert.match(compose, /healthcheck:/u);
   assert.match(compose, /zoom-sender-profile:\/app\/profile/u);

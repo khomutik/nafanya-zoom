@@ -36,6 +36,7 @@ export function loadConfig(env = process.env) {
     minIntervalMs,
     maxIntervalMs,
     errorIntervalMs: readPositiveInt(env.ZOOM_SENDER_ERROR_POLL_MS ?? env.ZOOM_SENDER_ERROR_INTERVAL_MS, 10000, { min: 1000, max: 120000 }),
+    zoomRecoveryAfterMs: readPositiveInt(env.ZOOM_SENDER_RECOVERY_AFTER_MS, 180000, { min: 30000, max: 900000 }),
     outboxLimit: readPositiveInt(env.ZOOM_SENDER_OUTBOX_LIMIT, 20, { min: 1, max: 50 }),
     healthHost: String(env.ZOOM_SENDER_HEALTH_HOST || "127.0.0.1").trim() || "127.0.0.1",
     healthPort: readPositiveInt(env.ZOOM_SENDER_HEALTH_PORT, 3097, { min: 1, max: 65535 })

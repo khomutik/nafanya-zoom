@@ -10,23 +10,23 @@ services:
         max-size: "10m"
         max-file: "3"
     network_mode: host
-    working_dir: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}
+    working_dir: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/home/masha/nafanya-zoom-sender}
     command: ["node", "control-agent/main.mjs"]
     env_file:
       - .env
     environment:
       ZOOM_CONTROL_HOST: 127.0.0.1
       ZOOM_CONTROL_PORT: 3098
-      ZOOM_CONTROL_PROJECT_DIR: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}
-      ZOOM_CONTROL_ENV_PATH: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}/.env
+      ZOOM_CONTROL_PROJECT_DIR: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/home/masha/nafanya-zoom-sender}
+      ZOOM_CONTROL_ENV_PATH: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/home/masha/nafanya-zoom-sender}/.env
       ZOOM_CONTROL_PROFILE_DIR: /sender-profile
-      ZOOM_CONTROL_DIAGNOSTICS_DIR: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}/diagnostics
+      ZOOM_CONTROL_DIAGNOSTICS_DIR: ${ZOOM_CONTROL_PROJECT_HOST_PATH:-/home/masha/nafanya-zoom-sender}/diagnostics
       ZOOM_CONTROL_HEALTH_URL: http://127.0.0.1:3097/health
       # ZOOM_APP_CLIENT_SECRET and ZOOM_APP_SESSION_SECRET are read from .env.
     volumes:
       # Keep this path identical inside and outside the container. Docker Compose
       # passes bind-mount paths to the host daemon when it starts zoom-sender.
-      - ./:${ZOOM_CONTROL_PROJECT_HOST_PATH:-/opt/nafanya-zoom/sender}
+      - ./:${ZOOM_CONTROL_PROJECT_HOST_PATH:-/home/masha/nafanya-zoom-sender}
       - zoom-sender-profile:/sender-profile
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin/docker:/usr/bin/docker:ro

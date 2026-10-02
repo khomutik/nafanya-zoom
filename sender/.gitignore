@@ -1,0 +1,4 @@
+.env.local
+.local-profile/
+profile/
+diagnostics/

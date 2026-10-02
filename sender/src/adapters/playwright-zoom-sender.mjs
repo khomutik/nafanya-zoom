@@ -13,6 +13,23 @@ const DIAGNOSTIC_HTML_LIMIT = 5000;
 const CHAT_DIAGNOSTIC_TEXT_LIMIT = 1200;
 const CHAT_DIAGNOSTIC_DOM_LIMIT = 2500;
 const ZOOM_MESSAGE_REF_RE = /^\d+-\{[0-9a-f-]{20,}\}$/iu;
+const CHAT_INPUT_SELECTORS = [
+  'textarea[aria-label*="chat" i]',
+  'textarea[placeholder*="chat" i]',
+  'textarea[aria-placeholder*="chat" i]',
+  'input[aria-label*="chat" i]',
+  'input[placeholder*="chat" i]',
+  '[role="textbox"][aria-label*="chat" i]',
+  '[role="textbox"][aria-placeholder*="chat" i]',
+  '[role="textbox"][data-placeholder*="chat" i]',
+  'div[contenteditable="true"][aria-label*="chat" i]',
+  'div[contenteditable="plaintext-only"][aria-label*="chat" i]',
+  'div[contenteditable="plaintext-only"][aria-placeholder*="chat" i]',
+  'div[contenteditable="plaintext-only"][data-placeholder*="chat" i]',
+  'p[contenteditable="true"]',
+  'p[contenteditable="plaintext-only"]',
+  'div[contenteditable="true"]'
+];
 const DEFAULT_BROWSER_ARGS = [
   "--no-sandbox",
   "--disable-dev-shm-usage",
@@ -26,7 +43,7 @@ const ZOOM_RESPONSE_RE = /(?:^|\.)zoom\.us$|zoomcdn\.com$|zmdownload\.zoom\.us$/
 
 function classifyZoomPresenceText(bodyText, chatOpen = false) {
   const text = String(bodyText || "");
-  const waitingRoom = /waiting room|host.*let you in|wait.*host.*start|\u043e\u0436\u0438\u0434\u0430|\u0434\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c[\s\S]{0,80}\u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440[\s\S]{0,80}\u043d\u0430\u0447\u043d/iu.test(text);
+  const waitingRoom = !chatOpen && /waiting room|host.*let you in|wait.*host.*start|\u043e\u0436\u0438\u0434\u0430|\u0434\u043e\u0436\u0434\u0438\u0442\u0435\u0441\u044c[\s\S]{0,80}\u043e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0442\u043e\u0440[\s\S]{0,80}\u043d\u0430\u0447\u043d/iu.test(text);
   const zoomJoined = !waitingRoom && (Boolean(chatOpen) || /leave|mute|unmute|participants|chat|\u0432\u044b\u0439\u0442\u0438|\u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a\u0438|\u0447\u0430\u0442/iu.test(text));
   return { waitingRoom, zoomJoined };
 }
@@ -105,30 +122,32 @@ async function clickVisibleControlByText(page, patterns) {
 }
 
 async function hasChatInput(page) {
-  return page.evaluate(() => {
-    const selectors = [
-      'textarea[aria-label*="chat" i]',
-      'textarea[placeholder*="chat" i]',
-      'textarea[aria-placeholder*="chat" i]',
-      'input[aria-label*="chat" i]',
-      'input[placeholder*="chat" i]',
-      '[role="textbox"][aria-label*="chat" i]',
-      '[role="textbox"][aria-placeholder*="chat" i]',
-      '[role="textbox"][data-placeholder*="chat" i]',
-      'div[contenteditable="true"][aria-label*="chat" i]',
-      'div[contenteditable="plaintext-only"][aria-label*="chat" i]',
-      'div[contenteditable="plaintext-only"][aria-placeholder*="chat" i]',
-      'div[contenteditable="plaintext-only"][data-placeholder*="chat" i]',
-      'p[contenteditable="true"]',
-      'p[contenteditable="plaintext-only"]',
-      'div[contenteditable="true"]'
-    ];
+  return page.evaluate((selectors) => {
     return selectors.some((selector) => [...document.querySelectorAll(selector)].some((element) => {
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       return style.visibility !== "hidden" && style.display !== "none" && rect.width > 20 && rect.height > 10;
     }));
-  }).catch(() => false);
+  }, CHAT_INPUT_SELECTORS).catch(() => false);
+}
+
+async function findVisibleChatInput(page) {
+  const handle = await page.evaluateHandle((selectors) => {
+    const isVisible = (element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.visibility !== "hidden" && style.display !== "none" && rect.width > 20 && rect.height > 10;
+    };
+    for (const selector of selectors) {
+      const matches = [...document.querySelectorAll(selector)].filter(isVisible);
+      if (matches.length) return matches.at(-1);
+    }
+    return null;
+  }, CHAT_INPUT_SELECTORS).catch(() => null);
+  if (!handle) return null;
+  const element = handle.asElement();
+  if (!element) await handle.dispose().catch(() => null);
+  return element;
 }
 
 async function hasChatUnavailableNotice(page) {
@@ -261,32 +280,20 @@ async function ensureMeetingMediaOff(page) {
 
 async function sendChatText(page, text) {
   if (!await openChatPanel(page)) return { sent: false, ack: false };
-  const selectors = [
-    'textarea[aria-label*="chat" i]',
-    'textarea[placeholder*="chat" i]',
-    'textarea[aria-placeholder*="chat" i]',
-    '[role="textbox"][aria-label*="chat" i]',
-    '[role="textbox"][aria-placeholder*="chat" i]',
-    '[role="textbox"][data-placeholder*="chat" i]',
-    'div[contenteditable="true"][aria-label*="chat" i]',
-    'div[contenteditable="plaintext-only"][aria-label*="chat" i]',
-    'div[contenteditable="plaintext-only"][aria-placeholder*="chat" i]',
-    'div[contenteditable="plaintext-only"][data-placeholder*="chat" i]',
-    'p[contenteditable="true"]',
-    'p[contenteditable="plaintext-only"]',
-    'div[contenteditable="true"]'
-  ];
-  for (const selector of selectors) {
-    const input = page.locator(selector).last();
-    if (await input.isVisible({ timeout: 1500 }).catch(() => false)) {
-      await input.click().catch(() => null);
-      await page.keyboard.insertText(String(text || ""));
-      await page.keyboard.press("Enter");
-      await page.waitForTimeout(700);
-      return { sent: true, ack: true };
-    }
+  const input = await findVisibleChatInput(page);
+  if (!input) return { sent: false, ack: false };
+  try {
+    await input.evaluate((element) => {
+      element.focus();
+      element.click();
+    });
+    await page.keyboard.insertText(String(text || ""));
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(700);
+    return { sent: true, ack: true };
+  } finally {
+    await input.dispose().catch(() => null);
   }
-  return { sent: false, ack: false };
 }
 
 function normalizeComparableChatText(value) {
@@ -794,9 +801,10 @@ async function getSystemDiagnostics(config, browser, launchArgs) {
 }
 
 export class PlaywrightZoomSender {
-  constructor(config, { logger = console } = {}) {
+  constructor(config, { logger = console, browserCloseTimeoutMs = 5000 } = {}) {
     this.config = config;
     this.logger = logger;
+    this.browserCloseTimeoutMs = browserCloseTimeoutMs;
     this.browser = null;
     this.page = null;
     this.presence = {
@@ -1006,8 +1014,32 @@ export class PlaywrightZoomSender {
   }
 
   async stop() {
-    await this.browser?.close().catch(() => null);
+    const browser = this.browser;
+    this.browser = null;
+    this.page = null;
+    this.presence = {
+      zoomPageOpen: false,
+      zoomJoined: false,
+      waitingRoom: false,
+      chatOpen: false,
+      chatUnavailable: false,
+      chatReason: null
+    };
+    if (!browser) return;
+    let timeoutId;
+    await Promise.race([
+      browser.close().catch(() => null),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(resolve, this.browserCloseTimeoutMs);
+      })
+    ]);
+    clearTimeout(timeoutId);
+  }
+
+  async restart() {
+    await this.stop();
+    return this.start();
   }
 }
 
-export { DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, collectVisibleChatMessages, collectVisibleControls, ensureMeetingMediaOff, exactOwnChatRecords, hasChatInput, isOwnIdentityChatRecord, normalizeComparableChatText, openChatPanel, sanitizeDiagnosticText, sanitizePageUrl, saveDiagnosticsSnapshot, sendVerifiedChatText, shouldAttemptChatRecovery };
+export { CHAT_INPUT_SELECTORS, DEFAULT_BROWSER_ARGS, buildChatMessageFingerprint, buildZoomWebClientUrl, classifyZoomPresenceText, collectVisibleChatMessages, collectVisibleControls, ensureMeetingMediaOff, exactOwnChatRecords, findVisibleChatInput, hasChatInput, isOwnIdentityChatRecord, normalizeComparableChatText, openChatPanel, sanitizeDiagnosticText, sanitizePageUrl, saveDiagnosticsSnapshot, sendVerifiedChatText, shouldAttemptChatRecovery };

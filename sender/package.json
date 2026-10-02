@@ -4,6 +4,10 @@
     "start": "node src/main.mjs",
     "auth-setup": "node src/auth-setup.mjs",
     "dry-run": "node src/dry-run.mjs",
+    "debug:all": "node scripts/debug-all.mjs",
+    "debug:sender": "node src/main.mjs",
+    "debug:control": "node control-agent/main.mjs",
+    "debug:stop": "node scripts/debug-stop.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

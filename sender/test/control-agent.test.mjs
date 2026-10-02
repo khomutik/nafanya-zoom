@@ -4,6 +4,9 @@ import { ZoomControlService, publicHealth, safeError } from "../control-agent/se
 import { SAFE_VALUES, updateEnvText } from "../control-agent/docker-ops.mjs";
 import { buildControlHtml } from "../control-agent/html.mjs";
 import { createCipheriv, createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { buildZoomAppSessionCookie, decryptZoomAppContext, issueZoomAppSession, verifyZoomAppSession } from "../control-agent/zoom-app-auth.mjs";
 
 function encryptZoomAppContext(context, secret) {
@@ -35,7 +38,6 @@ function fakeOps(overrides = {}) {
     async startSender() { calls.push("start-sender"); },
     async stopSender() { calls.push("stop-sender"); },
     async getSenderHealth() { return { status: "healthy", zoomJoined: true, chatOpen: true, lastError: null }; },
-    async getQueueStatus() { return { queueOpen: false, outboxSize: 0 }; },
     async detectAuthRequired() { return false; },
     async startAuthSetup() { calls.push("auth-setup:start"); return "a".repeat(64); },
     async getAuthSetupState() { return { state: "completed" }; },
@@ -76,12 +78,15 @@ test("control start refuses to run while old bridge is active", async () => {
   assert.ok(!ops.calls.includes("start-sender"));
 });
 
-test("control stop ignores preserved legacy queue state", async () => {
-  const ops = fakeOps({ async getQueueStatus() { return { queueOpen: true }; } });
+test("control status and stop never query Worker when sender is off", async () => {
+  let workerChecks = 0;
+  const ops = fakeOps({ async getQueueStatus() { workerChecks += 1; return { queueOpen: true }; } });
   const service = new ZoomControlService(ops);
+  await service.status();
   const result = await service.stop();
   assert.equal(result.ok, true);
   assert.deepEqual(ops.calls, ["stop-sender", "mode:safe"]);
+  assert.equal(workerChecks, 0);
 });
 
 test("control stop uses only sender stop and safe mode", async () => {
@@ -134,6 +139,28 @@ test("an admitted sender with a closed chat is an error, not endless starting", 
   const status = await service.status();
   assert.equal(status.mode, "error");
   assert.match(status.lastError, /\u0447\u0430\u0442 \u043d\u0435 \u043e\u0442\u043a\u0440\u044b\u043b\u0441\u044f/iu);
+});
+
+test("waiting room is a stable stoppable state instead of a startup timeout", async () => {
+  let running = false;
+  const ops = fakeOps({
+    async isSenderRunning() { return running; },
+    async startSender() { ops.calls.push("start-sender"); running = true; },
+    async stopSender() { ops.calls.push("stop-sender"); running = false; },
+    async getSenderHealth() {
+      return { status: "warning", zoomPageOpen: true, zoomJoined: false, waitingRoom: true, chatOpen: false };
+    },
+    async sleep() { await new Promise((resolve) => setTimeout(resolve, 1)); }
+  });
+  const service = new ZoomControlService(ops, { startTimeoutMs: 5, pollMs: 1 });
+  service.requestStart();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const waiting = await service.status();
+  assert.equal(waiting.mode, "waiting_room");
+  assert.equal(waiting.lastError, null);
+  const stopped = await service.stop();
+  assert.equal(stopped.ok, true);
+  assert.equal((await service.status()).mode, "off");
 });
 
 test("control start reports worker and chat readiness failures honestly", async () => {
@@ -194,6 +221,8 @@ test("control page exposes human buttons and statuses without secrets", () => {
   assert.match(html, /Включить Нафаню/u);
   assert.match(html, /Выключить Нафаню/u);
   assert.match(html, /В Zoom, чат открыт/u);
+  assert.match(html, /В зале ожидания/u);
+  assert.match(html, /Нафаня ждёт допуска/u);
   assert.match(html, /Нужен вход в Zoom/u);
   assert.match(html, /Открыть окно Zoom для входа/u);
   assert.match(html, /Остановить восстановление входа/u);
@@ -201,13 +230,15 @@ test("control page exposes human buttons and statuses without secrets", () => {
   assert.match(html, /Нажмите Починить вход Zoom/u);
   assert.match(html, /\.\/vnc\/vnc\.html/u);
   assert.match(html, /\.auth-help\[hidden\]\{display:none\}/u);
-  assert.match(html, /<section class="control">[\s\S]*<iframe id="workerPanel"/u);
+  assert.match(html, /<section class="control">[\s\S]*id="workerPanelOff"[\s\S]*<iframe id="workerPanel"/u);
+  assert.doesNotMatch(html, /<iframe id="workerPanel"[^>]+src=/u);
   assert.match(html, /class="admin-panel"/u);
   assert.match(html, /Админ \/ вход Zoom/u);
   assert.match(html, /function syncAdminVisibility/u);
   assert.match(html, /\$\("auth"\)\.hidden=!needAuth&&!admin\.open/u);
   assert.match(html, /authorizedFetch\("\.\/api\/status"/u);
-  assert.match(html, /async function refreshAll\(\)[\s\S]*worker-panel\?refresh=/u);
+  assert.match(html, /function syncWorkerPanel\(s,force=false\)/u);
+  assert.match(html, /if\(s\?\.running\)syncWorkerPanel\(s,true\)/u);
   assert.match(html, /\$\("stop"\)\.disabled=busy\|\|!s\.running/u);
   assert.match(html, /let pendingMessage=""/u);
   assert.match(html, /pendingMessage=data\.error\|\|"Операция не выполнена"/u);
@@ -220,6 +251,9 @@ test("control page exposes human buttons and statuses without secrets", () => {
   assert.match(html, /\.control\{position:static/u);
   assert.match(html, /new ResizeObserver\(resizeWorkerPanel\)/u);
   assert.doesNotMatch(html, /ZOOM_CONTROL_TOKEN|ZOOM_PANEL_TOKEN|ZOOM_MEETING_URL/u);
+  const inlineScript = [...html.matchAll(/<script>([\s\S]*?)<\/script>/gu)].at(-1)?.[1];
+  assert.ok(inlineScript);
+  assert.doesNotThrow(() => new Function(inlineScript));
 });
 
 test("control page has a configurable shared host timer and collapsible tech panel", () => {
@@ -237,9 +271,12 @@ test("control page has a configurable shared host timer and collapsible tech pan
   assert.match(html, /const TIMER_DEFAULT_MS=5\*60\*1000/u);
   assert.match(html, /baseMs:TIMER_DEFAULT_MS/u);
   assert.match(html, /action:"zoom_timer_action"/u);
-  assert.match(html, /timerRequest\("sync"\)/u);
-  assert.match(html, /setInterval\(syncSharedTimer,5000\)/u);
-  assert.doesNotMatch(html, /setInterval\(syncSharedTimer,1500\)/u);
+  assert.match(html, /authorizedFetch\("\.\/zoom-only\/timer"/u);
+  assert.match(html, /async function syncSharedTimer/u);
+  assert.match(html, /setInterval\(\(\)=>\{void syncSharedTimer\(\)\},5000\)/u);
+  assert.doesNotMatch(html, /nafanya-timer-client|nafanya-worker-state/u);
+  assert.doesNotMatch(html, /if\(!nafanyaRunning\)return Promise\.reject\(new Error\("nafanya_off"\)\)/u);
+  assert.doesNotMatch(html, /timerStart"\)\.disabled=!nafanyaRunning/u);
   assert.match(html, /configured\.product/u);
   assert.match(html, /zoomProduct==="desktop"&&timerExecutor&&timerIndicatorSupported/u);
   assert.match(html, /configured\.product/u);
@@ -347,7 +384,82 @@ test("control HTTP entrypoint uses protected cookie and fixed routes", async () 
   assert.match(source, /"\/zoom-only\/library\/import"/u);
   assert.match(source, /new URLSearchParams\(search\)/u);
   assert.match(source, /url\.pathname, url\.search/u);
+  assert.match(source, /proxyWorkerOnlyWhileSenderRuns/u);
+  assert.match(source, /if \(!current\.running\)/u);
+  assert.match(source, /error: "nafanya_off"/u);
+  assert.match(source, /url\.pathname === "\/zoom-only\/timer"/u);
+  assert.match(source, /payload\?\.action !== "zoom_timer_action"/u);
+  assert.match(source, /timer_action_required/u);
+  assert.match(source, /zoom_sender_stop_requested/u);
   assert.doesNotMatch(source, /child_process|exec\(|spawn\(/u);
+});
+
+test("timer proxy works while sender is off and rejects non-timer actions", async (context) => {
+  const workerRequests = [];
+  const worker = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    workerRequests.push({ url: request.url, body: JSON.parse(Buffer.concat(chunks).toString("utf8")), token: request.headers["x-nafanya-zoom-panel-token"] });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      state: { status: "idle", running: false, remainingMs: 300000, baseMs: 300000, endAt: 0, revision: 1 },
+      serverNow: Date.now(),
+      executorActive: false,
+      isExecutor: false
+    }));
+  });
+  await new Promise((resolve) => worker.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise((resolve) => worker.close(resolve)));
+
+  const portProbe = createServer();
+  await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+  const controlPort = portProbe.address().port;
+  await new Promise((resolve) => portProbe.close(resolve));
+  const child = spawn(process.execPath, [fileURLToPath(new URL("../control-agent/main.mjs", import.meta.url))], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    env: {
+      ...process.env,
+      ZOOM_CONTROL_HOST: "127.0.0.1",
+      ZOOM_CONTROL_PORT: String(controlPort),
+      ZOOM_CONTROL_TOKEN: "test-control-token",
+      WORKER_BASE_URL: `http://127.0.0.1:${worker.address().port}`,
+      ZOOM_ONLY_SECRET: "test-bridge-secret",
+      ZOOM_PANEL_TOKEN: "test-panel-token"
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => { if (!child.killed) child.kill(); });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("control agent did not start")), 5000);
+    child.stdout.on("data", (chunk) => {
+      if (!String(chunk).includes("Nafanya Zoom control listening")) return;
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.once("exit", (code) => reject(new Error(`control agent exited with ${code}`)));
+  });
+
+  const headers = { "content-type": "application/json", "x-nafanya-control-token": "test-control-token" };
+  const timerResponse = await fetch(`http://127.0.0.1:${controlPort}/zoom-only/timer`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ action: "zoom_timer_action", timerAction: "sync", instanceId: "test" })
+  });
+  assert.equal(timerResponse.status, 200);
+  assert.equal((await timerResponse.json()).ok, true);
+  assert.equal(workerRequests.length, 1);
+  assert.match(workerRequests[0].url, /^\/zoom-only\/app\/action\?controlRequest=/u);
+  assert.equal(workerRequests[0].body.action, "zoom_timer_action");
+  assert.equal(workerRequests[0].token, "test-panel-token");
+
+  const rejected = await fetch(`http://127.0.0.1:${controlPort}/zoom-only/timer`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ action: "meeting_board_clear_all" })
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(workerRequests.length, 1);
 });
 
 test("control compose uses host network but binds the agent to localhost", async () => {
@@ -437,6 +549,7 @@ test("auth view uses fixed docker compose commands without arbitrary shell", asy
   assert.match(source, /stopAuthSetup/u);
   assert.match(source, /import \{ execFile \} from "node:child_process"/u);
   assert.doesNotMatch(source, /import \{[^}]*\b(?:exec|spawn)\b[^}]*\} from "node:child_process"|shell:\s*true/u);
+  assert.doesNotMatch(source, /getQueueStatus|zoom-only\/status/u);
 });
 
 test("Docker auth view binds noVNC to localhost and has no embedded secret", async () => {

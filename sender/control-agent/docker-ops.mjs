@@ -96,15 +96,6 @@ export class DockerOps {
     return response.json();
   }
 
-  async getQueueStatus() {
-    const response = await this.fetch(`${this.config.workerBaseUrl}/zoom-only/status`, {
-      headers: { "x-nafanya-zoom-secret": this.config.zoomOnlySecret, "user-agent": "Nafanya-Zoom-Control/1.0" },
-      signal: AbortSignal.timeout(8000)
-    });
-    const data = await response.json();
-    return { queueOpen: Boolean(data?.queue?.isOpen), outboxSize: Number(data?.outboxSize || 0) };
-  }
-
   async detectAuthRequired() {
     const dirs = await readdir(this.config.diagnosticsDir, { withFileTypes: true }).catch(() => []);
     const latest = dirs.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().at(-1);

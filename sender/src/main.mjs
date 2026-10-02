@@ -18,7 +18,7 @@ const workerClient = config.mockOutbox ? new MockWorkerOutboxClient(config) : ne
 const zoomAdapter = config.dryRun
   ? new DryRunZoomSender({ logger })
   : new PlaywrightZoomSender(config, { logger });
-const service = new ZoomSenderService({ workerClient, zoomAdapter, backoff, health, logger });
+const service = new ZoomSenderService({ workerClient, zoomAdapter, backoff, health, logger, zoomRecoveryAfterMs: config.zoomRecoveryAfterMs });
 const healthServer = startHealthServer(config, health, logger);
 
 async function shutdown(signal) {

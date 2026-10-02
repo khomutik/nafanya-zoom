@@ -52,9 +52,13 @@ export class ZoomControlService {
     const running = await this.ops.isSenderRunning();
     const health = running ? await this.ops.getSenderHealth().catch(() => null) : null;
     let mode = running ? "starting" : "off";
-    if (this.operation === "start") mode = "starting";
-    else if (this.operation === "stop") mode = "stopping";
+    if (this.operation === "stop") mode = "stopping";
     else if (this.operation === "auth-setup" || this.authSetupState !== "auth_setup_idle") mode = this.authSetupState;
+    else if (running && health?.waitingRoom) {
+      mode = "waiting_room";
+      this.lastError = null;
+    }
+    else if (this.operation === "start") mode = "starting";
     else if (running && health?.status === "healthy" && health?.zoomJoined && health?.chatOpen) {
       mode = "ready";
       this.lastError = null;
@@ -104,6 +108,11 @@ export class ZoomControlService {
         const health = await this.ops.getSenderHealth().catch(() => null);
         if (health?.status === "healthy" && health.zoomJoined && health.chatOpen) {
           this.lastMode = "ready";
+          return;
+        }
+        if (health?.waitingRoom) {
+          this.lastMode = "waiting_room";
+          this.lastError = null;
           return;
         }
         if (health?.zoomJoined && health?.chatUnavailable) {
